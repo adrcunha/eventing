@@ -23,10 +23,10 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"github.com/knative/eventing/pkg/adapter/cronjobevents"
 	"github.com/knative/eventing/pkg/tracing"
-	"knative.dev/pkg/signals"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/net/context"
+	"knative.dev/pkg/signals"
 )
 
 type envConfig struct {
@@ -62,7 +62,7 @@ func main() {
 		log.Fatal("Failed to process env var", zap.Error(err))
 	}
 
-	if err = tracing.SetupStaticZipkinPublishing("apiserversource", tracing.OnePercentSampling); err != nil {
+	if err = tracing.SetupStaticZipkinPublishing("cronjobsource", tracing.OnePercentSampling); err != nil {
 		// If tracing doesn't work, we will log an error, but allow the importer to continue to
 		// start.
 		logger.Error("Error setting up Zipkin publishing", zap.Error(err))

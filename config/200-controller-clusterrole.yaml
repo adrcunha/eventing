@@ -86,20 +86,13 @@ rules:
       - "sequences/status"
     verbs: *everything
 
-  # Source resources and statuses we care about.
+  # Messaging resources and finalizers we care about.
   - apiGroups:
-      - "sources.eventing.knative.dev"
+      - "messaging.knative.dev"
     resources:
-      - "cronjobsources"
-      - "cronjobsources/status"
-      - "cronjobsources/finalizers"
-      - "containersources"
-      - "containersources/status"
-      - "containersources/finalizers"
-      - "apiserversources"
-      - "apiserversources/status"
-      - "apiserversources/finalizers"
-    verbs: *everything
+      - "sequences/finalizers"
+    verbs:
+      - "update"
 
   # The subscription controller needs to retrieve and watch CustomResourceDefinitions.
   - apiGroups:
