@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apiserver/pkg/storage/names"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/pkg/test/helpers"
 
@@ -35,31 +36,40 @@ import (
 	// Apparently just importing it is enough. @_@ side effects @_@.
 	// https://github.com/kubernetes/client-go/issues/242
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 )
 
-// RunTests will use all provisioners that support the given feature, to run
+// ChannelTestRunner is used to run tests against channels.
+type ChannelTestRunner struct {
+	ChannelFeatureMap map[string][]Feature
+	ChannelsToTest    []string
+}
+
+// RunTests will use all channels that support the given feature, to run
 // a test for the testFunc.
-func RunTests(
+func (tr *ChannelTestRunner) RunTests(
 	t *testing.T,
-	provisioners []string,
 	feature Feature,
-	testFunc func(st *testing.T, provisioner string, isCRD bool),
+	testFunc func(st *testing.T, channel string),
 ) {
 	t.Parallel()
-	for _, provisioner := range provisioners {
-		channelConfig := ValidProvisionersMap[provisioner]
-		if contains(channelConfig.Features, feature) {
-			t.Run(fmt.Sprintf("%s-%s", t.Name(), provisioner), func(st *testing.T) {
-				testFunc(st, provisioner, false)
+	for _, channel := range tr.ChannelsToTest {
+		features := tr.ChannelFeatureMap[channel]
+		if contains(features, feature) {
+			t.Run(fmt.Sprintf("%s-%s", t.Name(), channel), func(st *testing.T) {
+				testFunc(st, channel)
 			})
-
-			if channelConfig.CRDSupported {
-				t.Run(fmt.Sprintf("%s-crd-%s", t.Name(), provisioner), func(st *testing.T) {
-					testFunc(st, provisioner, true)
-				})
-			}
 		}
 	}
+}
+
+func contains(features []Feature, feature Feature) bool {
+	for _, f := range features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
 }
 
 // Setup creates the client objects needed in the e2e tests,
@@ -67,7 +77,7 @@ func RunTests(
 func Setup(t *testing.T, runInParallel bool) *Client {
 	// Create a new namespace to run this test case.
 	baseFuncName := helpers.GetBaseFuncName(t.Name())
-	namespace := helpers.MakeK8sNamePrefix(baseFuncName)
+	namespace := makeK8sNamespace(baseFuncName)
 	t.Logf("namespace is : %q", namespace)
 	client, err := NewClient(
 		pkgTest.Flags.Kubeconfig,
@@ -82,7 +92,7 @@ func Setup(t *testing.T, runInParallel bool) *Client {
 
 	// Disallow manually interrupting the tests.
 	// TODO(Fredy-Z): t.Skip() can only be called on its own goroutine.
-	//                Investigate if there is other way to gracefully terminte the tests in the middle.
+	//                Investigate if there is other way to gracefully terminate the tests in the middle.
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -98,6 +108,11 @@ func Setup(t *testing.T, runInParallel bool) *Client {
 	return client
 }
 
+func makeK8sNamespace(baseFuncName string) string {
+	base := helpers.MakeK8sNamePrefix(baseFuncName)
+	return names.SimpleNameGenerator.GenerateName(base + "-")
+}
+
 // TearDown will delete created names using clients.
 func TearDown(client *Client) {
 	client.Tracker.Clean(true)
@@ -106,33 +121,13 @@ func TearDown(client *Client) {
 	}
 }
 
-func contains(features []Feature, feature Feature) bool {
-	for _, f := range features {
-		if f == feature {
-			return true
-		}
-	}
-	return false
-}
-
-// GetChannelTypeMeta gets the actual typemeta of the Channel type.
-// TODO(Fredy-Z): This function is a workaround when there are both provisioner and Channel CRD in this repo.
-//                It needs to be removed when the provisioner implementation is removed.
-func GetChannelTypeMeta(provisioner string, isCRD bool) *metav1.TypeMeta {
-	channelTypeMeta := ChannelTypeMeta
-	if isCRD {
-		channelTypeMeta = ProvisionerChannelMap[provisioner]
-	}
-	return channelTypeMeta
-}
-
 // CreateNamespaceIfNeeded creates a new namespace if it does not exist.
 func CreateNamespaceIfNeeded(t *testing.T, client *Client, namespace string) {
-	nsSpec, err := client.Kube.Kube.CoreV1().Namespaces().Get(namespace, metav1.GetOptions{})
+	_, err := client.Kube.Kube.CoreV1().Namespaces().Get(namespace, metav1.GetOptions{})
 
 	if err != nil && errors.IsNotFound(err) {
-		nsSpec = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-		nsSpec, err = client.Kube.Kube.CoreV1().Namespaces().Create(nsSpec)
+		nsSpec := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		_, err = client.Kube.Kube.CoreV1().Namespaces().Create(nsSpec)
 
 		if err != nil {
 			t.Fatalf("Failed to create Namespace: %s; %v", namespace, err)

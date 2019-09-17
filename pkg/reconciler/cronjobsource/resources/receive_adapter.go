@@ -19,30 +19,35 @@ package resources
 import (
 	"fmt"
 
-	"knative.dev/pkg/kmeta"
-
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/eventing/pkg/apis/sources/v1alpha1"
+	"knative.dev/eventing/pkg/utils"
+	"knative.dev/pkg/kmeta"
+)
 
-	"github.com/knative/eventing/pkg/apis/sources/v1alpha1"
+var (
+	// one is a form of int32(1) that you can take the address of.
+	one = int32(1)
 )
 
 // ReceiveAdapterArgs are the arguments needed to create a Cron Job Source Receive Adapter. Every
 // field is required.
 type ReceiveAdapterArgs struct {
-	Image   string
-	Source  *v1alpha1.CronJobSource
-	Labels  map[string]string
-	SinkURI string
+	Image         string
+	Source        *v1alpha1.CronJobSource
+	Labels        map[string]string
+	SinkURI       string
+	MetricsConfig string
+	LoggingConfig string
 }
 
 // MakeReceiveAdapter generates (but does not insert into K8s) the Receive Adapter Deployment for
 // Cron Job Sources.
 func MakeReceiveAdapter(args *ReceiveAdapterArgs) *v1.Deployment {
-	replicas := int32(1)
-
+	name := args.Source.ObjectMeta.Name
 	RequestResourceCPU, err := resource.ParseQuantity(args.Source.Spec.Resources.Requests.ResourceCPU)
 	if err != nil {
 		RequestResourceCPU = resource.MustParse("250m")
@@ -73,9 +78,9 @@ func MakeReceiveAdapter(args *ReceiveAdapterArgs) *v1.Deployment {
 
 	return &v1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    args.Source.Namespace,
-			GenerateName: fmt.Sprintf("cronjob-%s-", args.Source.Name),
-			Labels:       args.Labels,
+			Namespace: args.Source.Namespace,
+			Name:      utils.GenerateFixedName(args.Source, fmt.Sprintf("cronjobsource-%s", name)),
+			Labels:    args.Labels,
 			OwnerReferences: []metav1.OwnerReference{
 				*kmeta.NewControllerRef(args.Source),
 			},
@@ -84,7 +89,7 @@ func MakeReceiveAdapter(args *ReceiveAdapterArgs) *v1.Deployment {
 			Selector: &metav1.LabelSelector{
 				MatchLabels: args.Labels,
 			},
-			Replicas: &replicas,
+			Replicas: &one,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: args.Labels,
@@ -95,6 +100,11 @@ func MakeReceiveAdapter(args *ReceiveAdapterArgs) *v1.Deployment {
 						{
 							Name:  "receive-adapter",
 							Image: args.Image,
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "metrics",
+									ContainerPort: 9090,
+								}},
 							Env: []corev1.EnvVar{
 								{
 									Name:  "SCHEDULE",
@@ -115,6 +125,15 @@ func MakeReceiveAdapter(args *ReceiveAdapterArgs) *v1.Deployment {
 								{
 									Name:  "NAMESPACE",
 									Value: args.Source.Namespace,
+								}, {
+									Name:  "METRICS_DOMAIN",
+									Value: "knative.dev/eventing",
+								}, {
+									Name:  "K_METRICS_CONFIG",
+									Value: args.MetricsConfig,
+								}, {
+									Name:  "K_LOGGING_CONFIG",
+									Value: args.LoggingConfig,
 								},
 							},
 							Resources: res,

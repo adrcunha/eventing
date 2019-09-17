@@ -21,9 +21,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	eventingduck "github.com/knative/eventing/pkg/apis/duck/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	eventingduckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
 	"knative.dev/pkg/apis"
 )
 
@@ -58,61 +57,15 @@ func TestValidSpec(t *testing.T) {
 	}, {
 		name: "valid provider",
 		spec: BrokerSpec{
-			DeprecatedChannelTemplate: &ChannelSpec{},
-		},
-		want: nil,
-	}, {
-		name: "invalid provider, deprecatedgeneration",
-		spec: BrokerSpec{
-			DeprecatedChannelTemplate: &ChannelSpec{
-				DeprecatedGeneration: 30,
-			},
-		},
-		want: func() *apis.FieldError {
-			var errs *apis.FieldError
-			fe := apis.ErrDisallowedFields("channelTemplate.deprecatedGeneration")
-			errs = errs.Also(fe)
-			return errs
-		}(),
-	}, {
-		name: "invalid provider, subscribable",
-		spec: BrokerSpec{
-			DeprecatedChannelTemplate: &ChannelSpec{
-				Subscribable: &eventingduck.Subscribable{},
-			},
-		},
-		want: func() *apis.FieldError {
-			var errs *apis.FieldError
-			fe := apis.ErrDisallowedFields("channelTemplate.subscribable")
-			errs = errs.Also(fe)
-			return errs
-		}(),
-	}, {
-		name: "valid provider",
-		spec: BrokerSpec{
-			DeprecatedChannelTemplate: &ChannelSpec{
-				Provisioner: &corev1.ObjectReference{Kind: "mykind", APIVersion: "mapiversion"},
+			ChannelTemplate: &eventingduckv1alpha1.ChannelTemplateSpec{
+				TypeMeta: metav1.TypeMeta{APIVersion: "myapiversion", Kind: "mykind"},
 			},
 		},
 		want: nil,
-	}, {
-		name: "invalid spec, provisioner and crd",
-		spec: BrokerSpec{
-			DeprecatedChannelTemplate: &ChannelSpec{
-				Provisioner: &corev1.ObjectReference{},
-			},
-			ChannelTemplate: ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{Kind: "mykind"}},
-		},
-		want: func() *apis.FieldError {
-			var errs *apis.FieldError
-			fe := apis.ErrMultipleOneOf("channelTemplate", "channelTemplateSpec")
-			errs = errs.Also(fe)
-			return errs
-		}(),
 	}, {
 		name: "invalid templatespec, missing kind",
 		spec: BrokerSpec{
-			ChannelTemplate: ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{APIVersion: "myapiversion"}},
+			ChannelTemplate: &eventingduckv1alpha1.ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{APIVersion: "myapiversion"}},
 		},
 		want: func() *apis.FieldError {
 			var errs *apis.FieldError
@@ -123,7 +76,7 @@ func TestValidSpec(t *testing.T) {
 	}, {
 		name: "invalid templatespec, missing apiVersion",
 		spec: BrokerSpec{
-			ChannelTemplate: ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{Kind: "mykind"}},
+			ChannelTemplate: &eventingduckv1alpha1.ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{Kind: "mykind"}},
 		},
 		want: func() *apis.FieldError {
 			var errs *apis.FieldError
@@ -134,7 +87,7 @@ func TestValidSpec(t *testing.T) {
 	}, {
 		name: "valid templatespec",
 		spec: BrokerSpec{
-			ChannelTemplate: ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{Kind: "mykind", APIVersion: "myapiversion"}},
+			ChannelTemplate: &eventingduckv1alpha1.ChannelTemplateSpec{TypeMeta: metav1.TypeMeta{Kind: "mykind", APIVersion: "myapiversion"}},
 		},
 		want: nil,
 	}}

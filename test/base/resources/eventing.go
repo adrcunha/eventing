@@ -19,10 +19,15 @@ package resources
 // This file contains functions that construct Eventing resources.
 
 import (
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	pkgTest "knative.dev/pkg/test"
+
+	eventingduckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	eventingv1alpha1 "knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 )
 
 // BrokerOption enables further configuration of a Broker.
@@ -32,38 +37,18 @@ type BrokerOption func(*eventingv1alpha1.Broker)
 type TriggerOption func(*eventingv1alpha1.Trigger)
 
 // SubscriptionOption enables further configuration of a Subscription.
-type SubscriptionOption func(*eventingv1alpha1.Subscription)
-
-// clusterChannelProvisioner returns a ClusterChannelProvisioner for a given name.
-func clusterChannelProvisioner(name string) *corev1.ObjectReference {
-	if name == "" {
-		return nil
-	}
-	return pkgTest.CoreV1ObjectReference(ClusterChannelProvisionerKind, EventingAPIVersion, name)
-}
+type SubscriptionOption func(*messagingv1alpha1.Subscription)
 
 // channelRef returns an ObjectReference for a given Channel name.
 func channelRef(name string, typemeta *metav1.TypeMeta) *corev1.ObjectReference {
 	return pkgTest.CoreV1ObjectReference(typemeta.Kind, typemeta.APIVersion, name)
 }
 
-// Channel returns a Channel with the specified provisioner.
-func Channel(name, provisioner string) *eventingv1alpha1.Channel {
-	return &eventingv1alpha1.Channel{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
-		Spec: eventingv1alpha1.ChannelSpec{
-			Provisioner: clusterChannelProvisioner(provisioner),
-		},
-	}
-}
-
 // WithSubscriberForSubscription returns an option that adds a Subscriber for the given Subscription.
 func WithSubscriberForSubscription(name string) SubscriptionOption {
-	return func(s *eventingv1alpha1.Subscription) {
+	return func(s *messagingv1alpha1.Subscription) {
 		if name != "" {
-			s.Spec.Subscriber = &eventingv1alpha1.SubscriberSpec{
+			s.Spec.Subscriber = &messagingv1alpha1.SubscriberSpec{
 				Ref: ServiceRef(name),
 			}
 		}
@@ -72,9 +57,9 @@ func WithSubscriberForSubscription(name string) SubscriptionOption {
 
 // WithReplyForSubscription returns an options that adds a ReplyStrategy for the given Subscription.
 func WithReplyForSubscription(name string, typemeta *metav1.TypeMeta) SubscriptionOption {
-	return func(s *eventingv1alpha1.Subscription) {
+	return func(s *messagingv1alpha1.Subscription) {
 		if name != "" {
-			s.Spec.Reply = &eventingv1alpha1.ReplyStrategy{
+			s.Spec.Reply = &messagingv1alpha1.ReplyStrategy{
 				Channel: pkgTest.CoreV1ObjectReference(typemeta.Kind, typemeta.APIVersion, name),
 			}
 		}
@@ -86,12 +71,12 @@ func Subscription(
 	name, channelName string,
 	channelTypeMeta *metav1.TypeMeta,
 	options ...SubscriptionOption,
-) *eventingv1alpha1.Subscription {
-	subscription := &eventingv1alpha1.Subscription{
+) *messagingv1alpha1.Subscription {
+	subscription := &messagingv1alpha1.Subscription{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
-		Spec: eventingv1alpha1.SubscriptionSpec{
+		Spec: messagingv1alpha1.SubscriptionSpec{
 			Channel: *channelRef(channelName, channelTypeMeta),
 		},
 	}
@@ -101,20 +86,10 @@ func Subscription(
 	return subscription
 }
 
-// WithDeprecatedChannelTemplateForBroker returns a function that adds a DeprecatedChannelTemplate for the given Broker.
-func WithDeprecatedChannelTemplateForBroker(provisionerName string) BrokerOption {
-	return func(b *eventingv1alpha1.Broker) {
-		deprecatedChannelTemplate := &eventingv1alpha1.ChannelSpec{
-			Provisioner: clusterChannelProvisioner(provisionerName),
-		}
-		b.Spec.DeprecatedChannelTemplate = deprecatedChannelTemplate
-	}
-}
-
 // WithChannelTemplateForBroker returns a function that adds a ChannelTemplate for the given Broker.
 func WithChannelTemplateForBroker(channelTypeMeta metav1.TypeMeta) BrokerOption {
 	return func(b *eventingv1alpha1.Broker) {
-		channelTemplate := eventingv1alpha1.ChannelTemplateSpec{
+		channelTemplate := &eventingduckv1alpha1.ChannelTemplateSpec{
 			TypeMeta: channelTypeMeta,
 		}
 		b.Spec.ChannelTemplate = channelTemplate
@@ -134,16 +109,32 @@ func Broker(name string, options ...BrokerOption) *eventingv1alpha1.Broker {
 	return broker
 }
 
-// WithTriggerFilter returns an option that adds a TriggerFilter for the given Trigger.
-func WithTriggerFilter(eventSource, eventType string) TriggerOption {
+// WithDeprecatedSourceAndTypeTriggerFilter returns an option that adds a TriggerFilter with DeprecatedSourceAndType for the given Trigger.
+func WithDeprecatedSourceAndTypeTriggerFilter(eventSource, eventType string) TriggerOption {
 	return func(t *eventingv1alpha1.Trigger) {
 		triggerFilter := &eventingv1alpha1.TriggerFilter{
-			SourceAndType: &eventingv1alpha1.TriggerFilterSourceAndType{
+			DeprecatedSourceAndType: &eventingv1alpha1.TriggerFilterSourceAndType{
 				Type:   eventType,
 				Source: eventSource,
 			},
 		}
 		t.Spec.Filter = triggerFilter
+	}
+}
+
+// WithAttributesTriggerFilter returns an option that adds a TriggerFilter with Attributes for the given Trigger.
+func WithAttributesTriggerFilter(eventSource, eventType string, extensions map[string]interface{}) TriggerOption {
+	attrs := make(map[string]string)
+	attrs["type"] = eventType
+	attrs["source"] = eventSource
+	for k, v := range extensions {
+		attrs[k] = fmt.Sprintf("%v", v)
+	}
+	triggerFilterAttributes := eventingv1alpha1.TriggerFilterAttributes(attrs)
+	return func(t *eventingv1alpha1.Trigger) {
+		t.Spec.Filter = &eventingv1alpha1.TriggerFilter{
+			Attributes: &triggerFilterAttributes,
+		}
 	}
 }
 
@@ -158,7 +149,7 @@ func WithBroker(brokerName string) TriggerOption {
 func WithSubscriberRefForTrigger(name string) TriggerOption {
 	return func(t *eventingv1alpha1.Trigger) {
 		if name != "" {
-			t.Spec.Subscriber = &eventingv1alpha1.SubscriberSpec{
+			t.Spec.Subscriber = &messagingv1alpha1.SubscriberSpec{
 				Ref: ServiceRef(name),
 			}
 		}
@@ -168,7 +159,7 @@ func WithSubscriberRefForTrigger(name string) TriggerOption {
 // WithSubscriberURIForTrigger returns an option that adds a Subscriber URI for the given Trigger.
 func WithSubscriberURIForTrigger(uri string) TriggerOption {
 	return func(t *eventingv1alpha1.Trigger) {
-		t.Spec.Subscriber = &eventingv1alpha1.SubscriberSpec{
+		t.Spec.Subscriber = &messagingv1alpha1.SubscriberSpec{
 			URI: &uri,
 		}
 	}

@@ -22,11 +22,11 @@ import (
 
 	"knative.dev/pkg/injection/sharedmain"
 
-	inmemorychannel "github.com/knative/eventing/pkg/reconciler/inmemorychannel/dispatcher"
+	inmemorychannel "knative.dev/eventing/pkg/reconciler/inmemorychannel/dispatcher"
 )
 
 func main() {
-	sharedmain.Main("inmemorychannel-dispatcher",
+	sharedmain.Main("inmemorychannel_dispatcher",
 		inmemorychannel.NewController,
 	)
 }

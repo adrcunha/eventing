@@ -22,13 +22,14 @@ import (
 
 	"knative.dev/pkg/injection/sharedmain"
 
-	"github.com/knative/eventing/pkg/reconciler/broker"
-	"github.com/knative/eventing/pkg/reconciler/channel"
-	"github.com/knative/eventing/pkg/reconciler/eventtype"
-	"github.com/knative/eventing/pkg/reconciler/namespace"
-	"github.com/knative/eventing/pkg/reconciler/sequence"
-	"github.com/knative/eventing/pkg/reconciler/subscription"
-	"github.com/knative/eventing/pkg/reconciler/trigger"
+	"knative.dev/eventing/pkg/reconciler/broker"
+	"knative.dev/eventing/pkg/reconciler/channel"
+	"knative.dev/eventing/pkg/reconciler/eventtype"
+	"knative.dev/eventing/pkg/reconciler/namespace"
+	"knative.dev/eventing/pkg/reconciler/parallel"
+	"knative.dev/eventing/pkg/reconciler/sequence"
+	"knative.dev/eventing/pkg/reconciler/subscription"
+	"knative.dev/eventing/pkg/reconciler/trigger"
 )
 
 func main() {
@@ -40,5 +41,6 @@ func main() {
 		broker.NewController,
 		eventtype.NewController,
 		sequence.NewController,
+		parallel.NewController,
 	)
 }

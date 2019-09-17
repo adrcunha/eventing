@@ -24,10 +24,10 @@ import (
 	. "knative.dev/pkg/reconciler/testing"
 
 	// Fake injection informers
-	_ "github.com/knative/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel/fake"
-	_ "knative.dev/pkg/injection/informers/kubeinformers/appsv1/deployment/fake"
-	_ "knative.dev/pkg/injection/informers/kubeinformers/corev1/endpoints/fake"
-	_ "knative.dev/pkg/injection/informers/kubeinformers/corev1/service/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel/fake"
+	_ "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment/fake"
+	_ "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints/fake"
+	_ "knative.dev/pkg/client/injection/kube/informers/core/v1/service/fake"
 )
 
 func TestNew(t *testing.T) {

@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	kncetesting "github.com/knative/eventing/pkg/kncloudevents/testing"
-	rectesting "github.com/knative/eventing/pkg/reconciler/testing"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +28,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	kncetesting "knative.dev/eventing/pkg/kncloudevents/testing"
+	rectesting "knative.dev/eventing/pkg/reconciler/testing"
+	"knative.dev/pkg/source"
 )
+
+type mockReporter struct {
+	eventCount int
+}
+
+func (r *mockReporter) ReportEventCount(args *source.ReportArgs, responseCode int) error {
+	r.eventCount += 1
+	return nil
+}
 
 func TestNewAdaptor(t *testing.T) {
 	ce := kncetesting.NewTestClient()
@@ -105,11 +115,59 @@ func TestNewAdaptor(t *testing.T) {
 				Controller: true,
 			}},
 		},
+		"with label selector": {
+			source: "test-source",
+			opt: Options{
+				GVRCs: []GVRC{{
+					GVR: schema.GroupVersionResource{
+						Group:    "apps",
+						Version:  "v1",
+						Resource: "replicasets",
+					},
+					Controller:    true,
+					LabelSelector: "environment=production,tier!=frontend",
+				}},
+			},
+			wantMode: RefMode,
+			wantGVRCs: []GVRC{{
+				GVR: schema.GroupVersionResource{
+					Group:    "apps",
+					Version:  "v1",
+					Resource: "replicasets",
+				},
+				Controller:    true,
+				LabelSelector: "environment=production,tier!=frontend",
+			}},
+		},
+		"with owner selector": {
+			source: "test-source",
+			opt: Options{
+				GVRCs: []GVRC{{
+					GVR: schema.GroupVersionResource{
+						Group:    "apps",
+						Version:  "v1",
+						Resource: "replicasets",
+					},
+					OwnerApiVersion: "v1",
+					OwnerKind:       "pod",
+				}},
+			},
+			wantMode: RefMode,
+			wantGVRCs: []GVRC{{
+				GVR: schema.GroupVersionResource{
+					Group:    "apps",
+					Version:  "v1",
+					Resource: "replicasets",
+				},
+				OwnerApiVersion: "v1",
+				OwnerKind:       "pod",
+			}},
+		},
 	}
 	for n, tc := range testCases {
 		t.Run(n, func(t *testing.T) {
-
-			a := NewAdaptor(tc.source, k8s, ce, logger, tc.opt)
+			r := &mockReporter{}
+			a := NewAdaptor(tc.source, k8s, ce, logger, tc.opt, r, "test-source")
 
 			got, ok := a.(*adapter)
 			if !ok {
@@ -147,8 +205,8 @@ func TestAdapter_StartRef(t *testing.T) {
 			},
 		}},
 	}
-
-	a := NewAdaptor(source, k8s, ce, logger, opt)
+	r := &mockReporter{}
+	a := NewAdaptor(source, k8s, ce, logger, opt, r, "test-source")
 
 	err := errors.New("test never ran")
 	stopCh := make(chan struct{})
@@ -182,8 +240,8 @@ func TestAdapter_StartResource(t *testing.T) {
 			},
 		}},
 	}
-
-	a := NewAdaptor(source, k8s, ce, logger, opt)
+	r := &mockReporter{}
+	a := NewAdaptor(source, k8s, ce, logger, opt, r, "test-source")
 
 	err := errors.New("test never ran")
 	stopCh := make(chan struct{})
@@ -268,11 +326,12 @@ func makeResourceAndTestingClient() (*resource, *kncetesting.TestCloudEventsClie
 	ce := kncetesting.NewTestClient()
 	source := "unit-test"
 	logger := zap.NewExample().Sugar()
-
+	r := &mockReporter{}
 	return &resource{
-		ce:     ce,
-		source: source,
-		logger: logger,
+		ce:       ce,
+		source:   source,
+		logger:   logger,
+		reporter: r,
 	}, ce
 }
 
@@ -280,10 +339,19 @@ func makeRefAndTestingClient() (*ref, *kncetesting.TestCloudEventsClient) {
 	ce := kncetesting.NewTestClient()
 	source := "unit-test"
 	logger := zap.NewExample().Sugar()
-
+	r := &mockReporter{}
 	return &ref{
-		ce:     ce,
-		source: source,
-		logger: logger,
+		ce:       ce,
+		source:   source,
+		logger:   logger,
+		reporter: r,
 	}, ce
+}
+
+func validateMetric(t *testing.T, reporter source.StatsReporter, want int) {
+	if mockReporter, ok := reporter.(*mockReporter); !ok {
+		t.Errorf("reporter is not a mockReporter")
+	} else if mockReporter.eventCount != want {
+		t.Errorf("Expected %d for metric, got %d", want, mockReporter.eventCount)
+	}
 }

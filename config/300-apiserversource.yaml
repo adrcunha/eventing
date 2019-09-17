@@ -29,7 +29,6 @@ spec:
     - knative
     - eventing
     - sources
-    - importers
     kind: ApiServerSource
     plural: apiserversources
   scope: Namespaced
@@ -38,12 +37,63 @@ spec:
   validation:
     openAPIV3Schema:
       properties:
-        apiVersion:
-          type: string
-        kind:
-          type: string
-        metadata:
+        registry:
           type: object
+          description: "Internal information, users should not set this property"
+          properties:
+            eventTypes:
+              # TODO: set the schemas' patterns.
+              type: object
+              description: "Event types that ApiServerSource can produce"
+              properties:
+                addResource:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.resource.add"
+                    schema:
+                      type: string
+                deleteResource:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.resource.delete"
+                    schema:
+                      type: string
+                updateResource:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.resource.update"
+                    schema:
+                      type: string
+                addRef:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.ref.add"
+                    schema:
+                      type: string
+                deleteRef:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.ref.delete"
+                    schema:
+                      type: string
+                updateRef:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      pattern: "dev.knative.apiserver.ref.update"
+                    schema:
+                      type: string
         spec:
           properties:
             serviceAccountName:
@@ -67,6 +117,19 @@ spec:
                   controller:
                     type: boolean
                     description: "If true, emits the managing controller ref. Only supported for mode=Ref. More info: https://kubernetes.io/docs/concepts/workloads/controllers/garbage-collection/"
+                  labelSelector:
+                    type: object
+                    description: "Label selector restricting this  list of objects to watch by their labels. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/"
+                  controllerSelector:
+                    type: object
+                    description: "Controller selector restricting the list of objects to watch by a controlling owner reference of the specified kind."
+                    properties:
+                      apiVersion:
+                        type: string
+                        description: "API version of the controlling owner reference."
+                      kind:
+                        type: string
+                        description: "Kind of the controlling owner reference."
               type: array
           required:
           - resources
@@ -97,4 +160,7 @@ spec:
             sinkUri:
               type: string
           type: object
-  version: v1alpha1
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true

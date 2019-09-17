@@ -19,8 +19,6 @@ package reconciler
 import (
 	"context"
 
-	clientset "github.com/knative/eventing/pkg/client/clientset/versioned"
-	eventingScheme "github.com/knative/eventing/pkg/client/clientset/versioned/scheme"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -30,14 +28,16 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/record"
+	clientset "knative.dev/eventing/pkg/client/clientset/versioned"
+	eventingScheme "knative.dev/eventing/pkg/client/clientset/versioned/scheme"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 
-	eventingclient "github.com/knative/eventing/pkg/client/injection/client"
+	eventingclient "knative.dev/eventing/pkg/client/injection/client"
+	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	"knative.dev/pkg/injection/clients/dynamicclient"
-	"knative.dev/pkg/injection/clients/kubeclient"
 )
 
 // Base implements the core controller logic, given a Reconciler.

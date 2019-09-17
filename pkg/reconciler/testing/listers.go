@@ -17,13 +17,6 @@ limitations under the License.
 package testing
 
 import (
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	messagingv1alpha1 "github.com/knative/eventing/pkg/apis/messaging/v1alpha1"
-	sourcesv1alpha1 "github.com/knative/eventing/pkg/apis/sources/v1alpha1"
-	fakeeventingclientset "github.com/knative/eventing/pkg/client/clientset/versioned/fake"
-	eventinglisters "github.com/knative/eventing/pkg/client/listers/eventing/v1alpha1"
-	messaginglisters "github.com/knative/eventing/pkg/client/listers/messaging/v1alpha1"
-	sourcelisters "github.com/knative/eventing/pkg/client/listers/sources/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -38,6 +31,13 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	rbacv1listers "k8s.io/client-go/listers/rbac/v1"
 	"k8s.io/client-go/tools/cache"
+	eventingv1alpha1 "knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+	sourcesv1alpha1 "knative.dev/eventing/pkg/apis/sources/v1alpha1"
+	fakeeventingclientset "knative.dev/eventing/pkg/client/clientset/versioned/fake"
+	eventinglisters "knative.dev/eventing/pkg/client/listers/eventing/v1alpha1"
+	messaginglisters "knative.dev/eventing/pkg/client/listers/messaging/v1alpha1"
+	sourcelisters "knative.dev/eventing/pkg/client/listers/sources/v1alpha1"
 	fakesharedclientset "knative.dev/pkg/client/clientset/versioned/fake"
 	"knative.dev/pkg/reconciler/testing"
 )
@@ -111,8 +111,8 @@ func (l *Listers) GetSharedObjects() []runtime.Object {
 	return l.sorter.ObjectsForSchemeFunc(fakesharedclientset.AddToScheme)
 }
 
-func (l *Listers) GetSubscriptionLister() eventinglisters.SubscriptionLister {
-	return eventinglisters.NewSubscriptionLister(l.indexerFor(&eventingv1alpha1.Subscription{}))
+func (l *Listers) GetSubscriptionLister() messaginglisters.SubscriptionLister {
+	return messaginglisters.NewSubscriptionLister(l.indexerFor(&messagingv1alpha1.Subscription{}))
 }
 
 func (l *Listers) GetTriggerLister() eventinglisters.TriggerLister {
@@ -131,12 +131,16 @@ func (l *Listers) GetInMemoryChannelLister() messaginglisters.InMemoryChannelLis
 	return messaginglisters.NewInMemoryChannelLister(l.indexerFor(&messagingv1alpha1.InMemoryChannel{}))
 }
 
-func (l *Listers) GetChannelLister() eventinglisters.ChannelLister {
-	return eventinglisters.NewChannelLister(l.indexerFor(&eventingv1alpha1.Channel{}))
+func (l *Listers) GetMessagingChannelLister() messaginglisters.ChannelLister {
+	return messaginglisters.NewChannelLister(l.indexerFor(&messagingv1alpha1.Channel{}))
 }
 
 func (l *Listers) GetSequenceLister() messaginglisters.SequenceLister {
 	return messaginglisters.NewSequenceLister(l.indexerFor(&messagingv1alpha1.Sequence{}))
+}
+
+func (l *Listers) GetParallelLister() messaginglisters.ParallelLister {
+	return messaginglisters.NewParallelLister(l.indexerFor(&messagingv1alpha1.Parallel{}))
 }
 
 func (l *Listers) GetCronJobSourceLister() sourcelisters.CronJobSourceLister {

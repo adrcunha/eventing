@@ -19,31 +19,34 @@ package resources
 import (
 	"fmt"
 
-	duckv1alpha1 "github.com/knative/eventing/pkg/apis/duck/v1alpha1"
-	"github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/kmeta"
+
+	duckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	"knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+	"knative.dev/eventing/pkg/utils"
 )
 
-// makeSubscriptionCRD returns a placeholder subscription for broker 'b', channelable 'c', and service 'svc'.
-func MakeSubscriptionCRD(b *v1alpha1.Broker, c *duckv1alpha1.Channelable, svc *corev1.Service) *v1alpha1.Subscription {
-	return &v1alpha1.Subscription{
+// MakeSubscriptionCRD returns a placeholder subscription for broker 'b', channelable 'c', and service 'svc'.
+func MakeSubscriptionCRD(b *v1alpha1.Broker, c *duckv1alpha1.Channelable, svc *corev1.Service) *messagingv1alpha1.Subscription {
+	return &messagingv1alpha1.Subscription{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    b.Namespace,
-			GenerateName: fmt.Sprintf("internal-ingress-%s-", b.Name),
+			Namespace: b.Namespace,
+			Name:      utils.GenerateFixedName(b, fmt.Sprintf("internal-ingress-%s", b.Name)),
 			OwnerReferences: []metav1.OwnerReference{
 				*kmeta.NewControllerRef(b),
 			},
 			Labels: ingressSubscriptionLabels(b.Name),
 		},
-		Spec: v1alpha1.SubscriptionSpec{
+		Spec: messagingv1alpha1.SubscriptionSpec{
 			Channel: corev1.ObjectReference{
 				APIVersion: c.APIVersion,
 				Kind:       c.Kind,
 				Name:       c.Name,
 			},
-			Subscriber: &v1alpha1.SubscriberSpec{
+			Subscriber: &messagingv1alpha1.SubscriberSpec{
 				Ref: &corev1.ObjectReference{
 					APIVersion: "v1",
 					Kind:       "Service",

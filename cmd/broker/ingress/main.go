@@ -17,41 +17,37 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
-	"reflect"
-	"sync"
-	"time"
 
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
-	"contrib.go.opencensus.io/exporter/prometheus"
 	cloudevents "github.com/cloudevents/sdk-go"
 	cehttp "github.com/cloudevents/sdk-go/pkg/cloudevents/transport/http"
 	"github.com/kelseyhightower/envconfig"
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	"github.com/knative/eventing/pkg/broker"
-	"github.com/knative/eventing/pkg/provisioners"
-	"github.com/knative/eventing/pkg/tracing"
-	"github.com/knative/eventing/pkg/utils"
-	"go.opencensus.io/stats"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
 	"go.uber.org/zap"
-	"k8s.io/client-go/kubernetes"
+
+	"knative.dev/eventing/pkg/broker/ingress"
+	"knative.dev/eventing/pkg/channel"
+	"knative.dev/eventing/pkg/tracing"
 	"knative.dev/pkg/configmap"
+	"knative.dev/pkg/controller"
+	"knative.dev/pkg/metrics"
 	"knative.dev/pkg/signals"
 	"knative.dev/pkg/system"
 	pkgtracing "knative.dev/pkg/tracing"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	crlog "sigs.k8s.io/controller-runtime/pkg/runtime/log"
+
+	kubeclient "knative.dev/pkg/client/injection/kube/client"
+	"knative.dev/pkg/injection"
+	"knative.dev/pkg/injection/sharedmain"
+)
+
+var (
+	masterURL  = flag.String("master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
+	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 )
 
 type envConfig struct {
@@ -60,39 +56,31 @@ type envConfig struct {
 	Namespace string `envconfig:"NAMESPACE" required:"true"`
 }
 
-var (
-	defaultTTL = 255
-
-	metricsPort = 9090
-
-	writeTimeout    = 1 * time.Minute
-	shutdownTimeout = 1 * time.Minute
-
-	wg sync.WaitGroup
-)
-
 func main() {
-	logConfig := provisioners.NewLoggingConfig()
-	logger := provisioners.NewProvisionerLoggerFromConfig(logConfig).Desugar()
-	defer logger.Sync()
+	logConfig := channel.NewLoggingConfig()
+	logger := channel.NewProvisionerLoggerFromConfig(logConfig).Desugar()
+	defer flush(logger)
 	flag.Parse()
-	crlog.SetLogger(crlog.ZapLogger(false))
-
-	logger.Info("Starting...")
-
-	mgr, err := manager.New(config.GetConfigOrDie(), manager.Options{})
-	if err != nil {
-		logger.Fatal("Error starting up.", zap.Error(err))
-	}
-
-	if err = eventingv1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
-		logger.Fatal("Unable to add eventingv1alpha1 scheme", zap.Error(err))
-	}
 
 	var env envConfig
 	if err := envconfig.Process("", &env); err != nil {
 		logger.Fatal("Failed to process env var", zap.Error(err))
 	}
+
+	ctx := signals.NewContext()
+
+	log.Printf("Registering %d clients", len(injection.Default.GetClients()))
+	log.Printf("Registering %d informer factories", len(injection.Default.GetInformerFactories()))
+	log.Printf("Registering %d informers", len(injection.Default.GetInformers()))
+
+	logger.Info("Starting...")
+
+	cfg, err := sharedmain.GetConfig(*masterURL, *kubeconfig)
+	if err != nil {
+		log.Fatal("Error building kubeconfig", err)
+	}
+
+	ctx, informers := injection.Default.SetupInformers(ctx, cfg)
 
 	channelURI := &url.URL{
 		Scheme: "http",
@@ -100,198 +88,68 @@ func main() {
 		Path:   "/",
 	}
 
-	kc := kubernetes.NewForConfigOrDie(mgr.GetConfig())
-	configMapWatcher := configmap.NewInformedWatcher(kc, system.Namespace())
+	cmw := configmap.NewInformedWatcher(kubeclient.Get(ctx), system.Namespace())
 
-	zipkinServiceName := tracing.BrokerIngressName(tracing.BrokerIngressNameArgs{
+	// TODO watch logging config map.
+
+	// TODO change the component name to broker once Stackdriver metrics are approved.
+	// Watch the observability config map and dynamically update metrics exporter.
+	cmw.Watch(metrics.ConfigMapName(), metrics.UpdateExporterFromConfigMap("broker_ingress", logger.Sugar()))
+
+	bin := tracing.BrokerIngressName(tracing.BrokerIngressNameArgs{
 		Namespace:  env.Namespace,
 		BrokerName: env.Broker,
 	})
-	if err = tracing.SetupDynamicZipkinPublishing(logger.Sugar(), configMapWatcher, zipkinServiceName); err != nil {
-		logger.Fatal("Error setting up Zipkin publishing", zap.Error(err))
+	if err = tracing.SetupDynamicPublishing(logger.Sugar(), cmw, bin); err != nil {
+		logger.Fatal("Error setting up trace publishing", zap.Error(err))
 	}
 
 	httpTransport, err := cloudevents.NewHTTPTransport(cloudevents.WithBinaryEncoding(), cehttp.WithMiddleware(pkgtracing.HTTPSpanMiddleware))
 	if err != nil {
 		logger.Fatal("Unable to create CE transport", zap.Error(err))
 	}
+
+	// Liveness check.
+	httpTransport.Handler = http.NewServeMux()
+	httpTransport.Handler.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+
 	ceClient, err := cloudevents.NewClient(httpTransport, cloudevents.WithTimeNow(), cloudevents.WithUUIDs())
 	if err != nil {
 		logger.Fatal("Unable to create CE client", zap.Error(err))
 	}
-	h := &handler{
-		logger:     logger,
-		ceClient:   ceClient,
-		channelURI: channelURI,
-		brokerName: env.Broker,
-	}
 
-	// Run the event handler with the manager.
-	err = mgr.Add(h)
-	if err != nil {
-		logger.Fatal("Unable to add handler", zap.Error(err))
-	}
+	reporter := ingress.NewStatsReporter()
 
-	// Metrics
-	e, err := prometheus.NewExporter(prometheus.Options{})
-	if err != nil {
-		logger.Fatal("Unable to create Prometheus exporter", zap.Error(err))
+	h := &ingress.Handler{
+		Logger:     logger,
+		CeClient:   ceClient,
+		ChannelURI: channelURI,
+		BrokerName: env.Broker,
+		Namespace:  env.Namespace,
+		Reporter:   reporter,
 	}
-	view.RegisterExporter(e)
-	sm := http.NewServeMux()
-	sm.Handle("/metrics", e)
-	metricsSrv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", metricsPort),
-		Handler:      e,
-		ErrorLog:     zap.NewStdLog(logger),
-		WriteTimeout: writeTimeout,
-	}
-
-	err = mgr.Add(&utils.RunnableServer{
-		Server:          metricsSrv,
-		ShutdownTimeout: shutdownTimeout,
-		WaitGroup:       &wg,
-	})
-	if err != nil {
-		logger.Fatal("Unable to add metrics runnableServer", zap.Error(err))
-	}
-
-	// Set up signals so we handle the first shutdown signal gracefully.
-	stopCh := signals.SetupSignalHandler()
 
 	// configMapWatcher does not block, so start it first.
-	if err = configMapWatcher.Start(stopCh); err != nil {
+	if err = cmw.Start(ctx.Done()); err != nil {
 		logger.Warn("Failed to start ConfigMap watcher", zap.Error(err))
 	}
 
+	// Start all of the informers and wait for them to sync.
+	logger.Info("Starting informers.")
+	if err := controller.StartInformers(ctx.Done(), informers...); err != nil {
+		logger.Fatal("Failed to start informers", zap.Error(err))
+	}
+
 	// Start blocks forever.
-	if err = mgr.Start(stopCh); err != nil {
-		logger.Error("manager.Start() returned an error", zap.Error(err))
+	if err = h.Start(ctx); err != nil {
+		logger.Error("ingress.Start() returned an error", zap.Error(err))
 	}
 	logger.Info("Exiting...")
-
-	// TODO Gracefully shutdown the ingress server. CloudEvents SDK doesn't seem
-	// to let us do that today.
-	go func() {
-		<-time.After(shutdownTimeout)
-		log.Fatalf("Shutdown took longer than %v", shutdownTimeout)
-	}()
-
-	// Wait for runnables to stop. This blocks indefinitely, but the above
-	// goroutine will exit the process if it takes longer than shutdownTimeout.
-	wg.Wait()
-	logger.Info("Done.")
 }
 
-type handler struct {
-	logger     *zap.Logger
-	ceClient   cloudevents.Client
-	channelURI *url.URL
-	brokerName string
-}
-
-func (h *handler) Start(stopCh <-chan struct{}) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- h.ceClient.StartReceiver(ctx, h.serveHTTP)
-	}()
-
-	// Stop either if the receiver stops (sending to errCh) or if stopCh is closed.
-	select {
-	case err := <-errCh:
-		return err
-	case <-stopCh:
-		break
-	}
-
-	// stopCh has been closed, we need to gracefully shutdown h.ceClient. cancel() will start its
-	// shutdown, if it hasn't finished in a reasonable amount of time, just return an error.
-	cancel()
-	select {
-	case err := <-errCh:
-		return err
-	case <-time.After(shutdownTimeout):
-		return errors.New("timeout shutting down ceClient")
-	}
-}
-
-func (h *handler) serveHTTP(ctx context.Context, event cloudevents.Event, resp *cloudevents.EventResponse) error {
-	tctx := cloudevents.HTTPTransportContextFrom(ctx)
-	if tctx.Method != http.MethodPost {
-		resp.Status = http.StatusMethodNotAllowed
-		return nil
-	}
-
-	// tctx.URI is actually the path...
-	if tctx.URI != "/" {
-		resp.Status = http.StatusNotFound
-		return nil
-	}
-
-	ctx, _ = tag.New(ctx, tag.Insert(TagBroker, h.brokerName))
-	defer func() {
-		stats.Record(ctx, MeasureEventsTotal.M(1))
-	}()
-
-	send := h.decrementTTL(&event)
-	if !send {
-		ctx, _ = tag.New(ctx, tag.Insert(TagResult, "droppedDueToTTL"))
-		return nil
-	}
-
-	// TODO Filter.
-
-	ctx, _ = tag.New(ctx, tag.Insert(TagResult, "dispatched"))
-	return h.sendEvent(ctx, tctx, event)
-}
-
-func (h *handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportContext, event cloudevents.Event) error {
-	sendingCTX := broker.SendingContext(ctx, tctx, h.channelURI)
-
-	startTS := time.Now()
-	defer func() {
-		dispatchTimeMS := int64(time.Now().Sub(startTS) / time.Millisecond)
-		stats.Record(sendingCTX, MeasureDispatchTime.M(dispatchTimeMS))
-	}()
-
-	_, err := h.ceClient.Send(sendingCTX, event)
-	if err != nil {
-		sendingCTX, _ = tag.New(sendingCTX, tag.Insert(TagResult, "error"))
-	} else {
-		sendingCTX, _ = tag.New(sendingCTX, tag.Insert(TagResult, "ok"))
-	}
-	return err
-}
-
-func (h *handler) decrementTTL(event *cloudevents.Event) bool {
-	ttl := h.getTTLToSet(event)
-	if ttl <= 0 {
-		// TODO send to some form of dead letter queue rather than dropping.
-		h.logger.Error("Dropping message due to TTL", zap.Any("event", event))
-		return false
-	}
-
-	var err error
-	event.Context, err = broker.SetTTL(event.Context, ttl)
-	if err != nil {
-		h.logger.Error("failed to set TTL", zap.Error(err))
-	}
-	return true
-}
-
-func (h *handler) getTTLToSet(event *cloudevents.Event) int {
-	ttlInterface, _ := broker.GetTTL(event.Context)
-	if ttlInterface == nil {
-		h.logger.Debug("No TTL found, defaulting")
-		return defaultTTL
-	}
-	// This should be a JSON number, which json.Unmarshalls as a float64.
-	ttl, ok := ttlInterface.(float64)
-	if !ok {
-		h.logger.Info("TTL attribute wasn't a float64, defaulting", zap.Any("ttlInterface", ttlInterface), zap.Any("typeOf(ttlInterface)", reflect.TypeOf(ttlInterface)))
-	}
-	return int(ttl) - 1
+func flush(logger *zap.Logger) {
+	logger.Sync()
+	metrics.FlushExporter()
 }

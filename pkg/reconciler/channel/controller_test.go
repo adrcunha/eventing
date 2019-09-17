@@ -25,7 +25,9 @@ import (
 	. "knative.dev/pkg/reconciler/testing"
 
 	// Fake injection informers
-	_ "github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/channel/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/channel/fake"
+	_ "knative.dev/pkg/client/injection/kube/client/fake"
+	_ "knative.dev/pkg/injection/clients/dynamicclient/fake"
 )
 
 func TestNew(t *testing.T) {

@@ -22,11 +22,16 @@ import (
 	"fmt"
 	"testing"
 
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	messagingv1alpha1 "github.com/knative/eventing/pkg/apis/messaging/v1alpha1"
-	"github.com/knative/eventing/test/base/resources"
-	"github.com/knative/eventing/test/common"
 	"k8s.io/apimachinery/pkg/util/uuid"
+
+	eventingduckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	"knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+	"knative.dev/eventing/test/base/resources"
+	"knative.dev/eventing/test/common"
+
+	pkgTest "knative.dev/pkg/test"
+
+	eventingtesting "knative.dev/eventing/pkg/reconciler/testing"
 )
 
 func TestSequence(t *testing.T) {
@@ -51,13 +56,13 @@ func TestSequence(t *testing.T) {
 		podName:     "e2e-stepper3",
 		msgAppender: "-step3",
 	}}
-	channelTypeMeta := common.InMemoryChannelTypeMeta
+	channelTypeMeta := getChannelTypeMeta(common.DefaultChannel)
 
 	client := setup(t, true)
 	defer tearDown(client)
 
 	// construct steps for the sequence
-	steps := make([]eventingv1alpha1.SubscriberSpec, 0)
+	steps := make([]v1alpha1.SubscriberSpec, 0)
 	for _, config := range stepSubscriberConfigs {
 		// create a stepper Pod with Service
 		podName := config.podName
@@ -66,7 +71,7 @@ func TestSequence(t *testing.T) {
 
 		client.CreatePodOrFail(stepperPod, common.WithService(podName))
 		// create a new step
-		step := eventingv1alpha1.SubscriberSpec{
+		step := v1alpha1.SubscriberSpec{
 			Ref: resources.ServiceRef(podName),
 		}
 		// add the step into steps
@@ -74,7 +79,7 @@ func TestSequence(t *testing.T) {
 	}
 
 	// create channelTemplate for the Sequence
-	channelTemplate := messagingv1alpha1.ChannelTemplateSpec{
+	channelTemplate := &eventingduckv1alpha1.ChannelTemplateSpec{
 		TypeMeta: *(channelTypeMeta),
 	}
 
@@ -82,7 +87,7 @@ func TestSequence(t *testing.T) {
 	// TODO(Fredy-Z): now we'll have to use a channel plus its subscription here, as reply of the Sequence
 	//                must be Addressable. In the future if we use Knative Serving in the tests, we can
 	//                make the logger service as a Knative service, and remove the channel and subscription.
-	client.CreateChannelOrFail(channelName, channelTypeMeta, "")
+	client.CreateChannelOrFail(channelName, channelTypeMeta)
 	// create logger service as the subscriber
 	loggerPod := resources.EventLoggerPod(loggerPodName)
 	client.CreatePodOrFail(loggerPod, common.WithService(loggerPodName))
@@ -93,11 +98,19 @@ func TestSequence(t *testing.T) {
 		channelTypeMeta,
 		resources.WithSubscriberForSubscription(loggerPodName),
 	)
-	// create replyOption for the Sequence
-	replyOption := resources.WithReplyForSequence(channelName, channelTypeMeta)
+	replyRef := pkgTest.CoreV1ObjectReference(channelTypeMeta.Kind, channelTypeMeta.APIVersion, channelName)
+
+	// create the sequence object
+	sequence := eventingtesting.NewSequence(
+		sequenceName,
+		client.Namespace,
+		eventingtesting.WithSequenceSteps(steps),
+		eventingtesting.WithSequenceChannelTemplateSpec(channelTemplate),
+		eventingtesting.WithSequenceReply(replyRef),
+	)
 
 	// create Sequence or fail the test if there is an error
-	client.CreateSequenceOrFail(sequenceName, steps, channelTemplate, replyOption)
+	client.CreateSequenceOrFail(sequence)
 
 	// wait for all test resources to be ready, so that we can start sending events
 	if err := client.WaitForAllTestResourcesReady(); err != nil {

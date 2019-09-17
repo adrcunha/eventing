@@ -19,16 +19,16 @@ package controller
 import (
 	"context"
 
-	"github.com/knative/eventing/pkg/reconciler"
 	"k8s.io/client-go/tools/cache"
+	"knative.dev/eventing/pkg/reconciler"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/system"
 
-	"github.com/knative/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel"
-	"knative.dev/pkg/injection/informers/kubeinformers/appsv1/deployment"
-	"knative.dev/pkg/injection/informers/kubeinformers/corev1/endpoints"
-	"knative.dev/pkg/injection/informers/kubeinformers/corev1/service"
+	"knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel"
+	"knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment"
+	"knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints"
+	"knative.dev/pkg/client/injection/kube/informers/core/v1/service"
 )
 
 const (

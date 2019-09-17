@@ -17,7 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/knative/eventing/pkg/apis/messaging"
+	"knative.dev/eventing/pkg/apis/messaging"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,6 +49,12 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&InMemoryChannelList{},
 		&Sequence{},
 		&SequenceList{},
+		&Subscription{},
+		&SubscriptionList{},
+		&Channel{},
+		&ChannelList{},
+		&Parallel{},
+		&ParallelList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

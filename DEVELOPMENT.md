@@ -9,10 +9,10 @@ This doc explains how to setup a development environment so you can get started
 
 1. Setup [Knative Serving](http://github.com/knative/serving)
 1. [Create and checkout a repo fork](#checkout-your-fork)
+1. [Install a channel implementation](#install-channels)
 
 Once you meet these requirements, you can
-[start the eventing-controller](#starting-eventing-controller) and
-[install a channel provisioner](#installing-a-channel-provisioner)!
+[start the eventing-controller](#starting-eventing-controller).
 
 Before submitting a PR, see also [CONTRIBUTING.md](./CONTRIBUTING.md).
 
@@ -26,7 +26,7 @@ You must have [`ko`](https://github.com/google/ko) installed.
 ### Checkout your fork
 
 The Go tools require that you clone the repository to the
-`src/github.com/knative/eventing` directory in your
+`src/knative.dev/eventing` directory in your
 [`GOPATH`](https://github.com/golang/go/wiki/SettingGOPATH).
 
 To check out this repository:
@@ -36,8 +36,8 @@ To check out this repository:
 1. Clone it to your machine:
 
 ```shell
-mkdir -p ${GOPATH}/src/github.com/knative
-cd ${GOPATH}/src/github.com/knative
+mkdir -p ${GOPATH}/src/knative.dev
+cd ${GOPATH}/src/knative.dev
 git clone git@github.com:${YOUR_GITHUB_USERNAME}/eventing.git
 cd eventing
 git remote add upstream git@github.com:knative/eventing.git
@@ -73,20 +73,19 @@ You can access the Eventing Controller's logs with:
 kubectl -n knative-eventing logs $(kubectl -n knative-eventing get pods -l app=eventing-controller -o name)
 ```
 
-## Installing a Channel Provisioner
+## Install Channels
 
-You'll need a `ClusterChannelProvisioner` installed before you can use any
-Channels. Eventing release artifacts include the
-[in-memory-channel](./config/provisioners/in-memory-channel/) out of the box.
-You can install it during development with:
+Install the
+[In-Memory-Channel](https://github.com/knative/eventing/tree/master/config/channels/in-memory-channel)
+since this is the
+[default channel](https://github.com/knative/docs/blob/master/docs/eventing/channels/default-channels.md).
 
 ```shell
-ko apply -f config/provisioners/in-memory-channel/
+ko apply -f config/channels/in-memory-channel/
 ```
 
-There are other `ClusterChannelProvisioner` implementations available under the
-[contrib](./contrib/) subdirectory, but those likely aren't needed for
-development unless you're working on one of them directly.
+Depending on your needs you might want to install other
+[channel implementations](https://github.com/knative/docs/blob/master/docs/eventing/channels/channels-crds.md).
 
 ## Iterating
 

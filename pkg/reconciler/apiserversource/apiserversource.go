@@ -30,19 +30,21 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	appsv1listers "k8s.io/client-go/listers/apps/v1"
 	"k8s.io/client-go/tools/cache"
 
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	"github.com/knative/eventing/pkg/apis/sources/v1alpha1"
-	eventinglisters "github.com/knative/eventing/pkg/client/listers/eventing/v1alpha1"
-	listers "github.com/knative/eventing/pkg/client/listers/sources/v1alpha1"
-	"github.com/knative/eventing/pkg/duck"
-	"github.com/knative/eventing/pkg/logging"
-	"github.com/knative/eventing/pkg/reconciler"
-	"github.com/knative/eventing/pkg/reconciler/apiserversource/resources"
 	"go.uber.org/zap"
+	eventingv1alpha1 "knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	"knative.dev/eventing/pkg/apis/sources/v1alpha1"
+	eventinglisters "knative.dev/eventing/pkg/client/listers/eventing/v1alpha1"
+	listers "knative.dev/eventing/pkg/client/listers/sources/v1alpha1"
+	"knative.dev/eventing/pkg/duck"
+	"knative.dev/eventing/pkg/logging"
+	"knative.dev/eventing/pkg/reconciler"
+	"knative.dev/eventing/pkg/reconciler/apiserversource/resources"
+	"knative.dev/eventing/pkg/utils"
+	pkgLogging "knative.dev/pkg/logging"
+	"knative.dev/pkg/metrics"
 )
 
 const (
@@ -50,10 +52,18 @@ const (
 	apiserversourceReconciled         = "ApiServerSourceReconciled"
 	apiServerSourceReadinessChanged   = "ApiServerSourceReadinessChanged"
 	apiserversourceUpdateStatusFailed = "ApiServerSourceUpdateStatusFailed"
+	apiserversourceDeploymentCreated  = "ApiServerSourceDeploymentCreated"
+	apiserversourceDeploymentUpdated  = "ApiServerSourceDeploymentUpdated"
 
 	// raImageEnvVar is the name of the environment variable that contains the receive adapter's
 	// image. It must be defined.
 	raImageEnvVar = "APISERVER_RA_IMAGE"
+
+	component = "apiserversource"
+)
+
+var (
+	deploymentGVK = appsv1.SchemeGroupVersion.WithKind("Deployment")
 )
 
 var apiServerEventTypes = []string{
@@ -77,8 +87,13 @@ type Reconciler struct {
 	deploymentLister      appsv1listers.DeploymentLister
 	eventTypeLister       eventinglisters.EventTypeLister
 
+	resourceTracker duck.ResourceTracker
+
 	source         string
 	sinkReconciler *duck.SinkReconciler
+	loggingContext context.Context
+	loggingConfig  *pkgLogging.Config
+	metricsConfig  *metrics.ExporterOptions
 }
 
 // Reconcile compares the actual state with the desired, and attempts to
@@ -126,7 +141,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, key string) error {
 }
 
 func (r *Reconciler) reconcile(ctx context.Context, source *v1alpha1.ApiServerSource) error {
+	source.Status.ObservedGeneration = source.Generation
+
 	source.Status.InitializeConditions()
+
+	track := r.resourceTracker.TrackInNamespace(source)
 
 	sinkObjRef := source.Spec.Sink
 	if sinkObjRef.Namespace == "" {
@@ -141,13 +160,16 @@ func (r *Reconciler) reconcile(ctx context.Context, source *v1alpha1.ApiServerSo
 	}
 	source.Status.MarkSink(sinkURI)
 
-	_, err = r.createReceiveAdapter(ctx, source, sinkURI)
+	ra, err := r.createReceiveAdapter(ctx, source, sinkURI)
 	if err != nil {
 		r.Logger.Error("Unable to create the receive adapter", zap.Error(err))
 		return err
 	}
 	// Update source status
-	source.Status.MarkDeployed()
+	source.Status.PropagateDeploymentAvailability(ra)
+	if err = track(utils.ObjectRef(ra, deploymentGVK)); err != nil {
+		return fmt.Errorf("unable to track receive adapter: %v", err)
+	}
 
 	err = r.reconcileEventTypes(ctx, source)
 	if err != nil {
@@ -173,40 +195,44 @@ func (r *Reconciler) getReceiveAdapterImage() string {
 }
 
 func (r *Reconciler) createReceiveAdapter(ctx context.Context, src *v1alpha1.ApiServerSource, sinkURI string) (*appsv1.Deployment, error) {
-	ra, err := r.getReceiveAdapter(ctx, src)
-	if err != nil && !apierrors.IsNotFound(err) {
-		logging.FromContext(ctx).Error("Unable to get an existing receive adapter", zap.Error(err))
-		return nil, err
+	loggingConfig, err := pkgLogging.LoggingConfigToJson(r.loggingConfig)
+	if err != nil {
+		logging.FromContext(ctx).Error("error while converting logging config to json", zap.Any("receiveAdapter", err))
 	}
-	if ra != nil {
-		logging.FromContext(ctx).Info("Reusing existing receive adapter", zap.Any("receiveAdapter", ra))
-		return ra, nil
+	metricsConfig, err := metrics.MetricsOptionsToJson(r.metricsConfig)
+	if err != nil {
+		logging.FromContext(ctx).Error("error while converting metrics config to json", zap.Any("receiveAdapter", err))
 	}
 	adapterArgs := resources.ReceiveAdapterArgs{
-		Image:   r.getReceiveAdapterImage(),
-		Source:  src,
-		Labels:  resources.Labels(src.Name),
-		SinkURI: sinkURI,
+		Image:         r.getReceiveAdapterImage(),
+		Source:        src,
+		Labels:        resources.Labels(src.Name),
+		SinkURI:       sinkURI,
+		LoggingConfig: loggingConfig,
+		MetricsConfig: metricsConfig,
 	}
 	expected := resources.MakeReceiveAdapter(&adapterArgs)
-	if ra != nil {
-		if r.podSpecChanged(ra.Spec.Template.Spec, expected.Spec.Template.Spec) {
-			ra.Spec.Template.Spec = expected.Spec.Template.Spec
-			if ra, err = r.KubeClientSet.AppsV1().Deployments(src.Namespace).Update(ra); err != nil {
-				return ra, err
-			}
-			logging.FromContext(ctx).Info("Receive Adapter updated.", zap.Any("receiveAdapter", ra))
-		} else {
-			logging.FromContext(ctx).Info("Reusing existing receive adapter", zap.Any("receiveAdapter", ra))
-		}
-		return ra, nil
-	}
 
-	if ra, err = r.KubeClientSet.AppsV1().Deployments(src.Namespace).Create(expected); err != nil {
-		return nil, err
+	ra, err := r.KubeClientSet.AppsV1().Deployments(src.Namespace).Get(expected.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		ra, err = r.KubeClientSet.AppsV1().Deployments(src.Namespace).Create(expected)
+		r.Recorder.Eventf(src, corev1.EventTypeNormal, apiserversourceDeploymentCreated, "Deployment created, error: %v", err)
+		return ra, err
+	} else if err != nil {
+		return nil, fmt.Errorf("error getting receive adapter: %v", err)
+	} else if !metav1.IsControlledBy(ra, src) {
+		return nil, fmt.Errorf("deployment %q is not owned by ApiServerSource %q", ra.Name, src.Name)
+	} else if r.podSpecChanged(ra.Spec.Template.Spec, expected.Spec.Template.Spec) {
+		ra.Spec.Template.Spec = expected.Spec.Template.Spec
+		if ra, err = r.KubeClientSet.AppsV1().Deployments(src.Namespace).Update(ra); err != nil {
+			return ra, err
+		}
+		r.Recorder.Eventf(src, corev1.EventTypeNormal, apiserversourceDeploymentUpdated, "Deployment updated")
+		return ra, nil
+	} else {
+		logging.FromContext(ctx).Debug("Reusing existing receive adapter", zap.Any("receiveAdapter", ra))
 	}
-	logging.FromContext(ctx).Info("Receive Adapter created.", zap.Any("receiveAdapter", expected))
-	return ra, err
+	return ra, nil
 }
 
 func (r *Reconciler) reconcileEventTypes(ctx context.Context, src *v1alpha1.ApiServerSource) error {
@@ -237,7 +263,7 @@ func (r *Reconciler) reconcileEventTypes(ctx context.Context, src *v1alpha1.ApiS
 		}
 	}
 
-	return err
+	return nil
 }
 
 func (r *Reconciler) getEventTypes(ctx context.Context, src *v1alpha1.ApiServerSource) ([]eventingv1alpha1.EventType, error) {
@@ -334,22 +360,6 @@ func (r *Reconciler) podSpecChanged(oldPodSpec corev1.PodSpec, newPodSpec corev1
 	return false
 }
 
-func (r *Reconciler) getReceiveAdapter(ctx context.Context, src *v1alpha1.ApiServerSource) (*appsv1.Deployment, error) {
-	dl, err := r.KubeClientSet.AppsV1().Deployments(src.Namespace).List(metav1.ListOptions{
-		LabelSelector: r.getLabelSelector(src).String(),
-	})
-	if err != nil {
-		logging.FromContext(ctx).Error("Unable to list deployments: %v", zap.Error(err))
-		return nil, err
-	}
-	for _, dep := range dl.Items {
-		if metav1.IsControlledBy(&dep, src) {
-			return &dep, nil
-		}
-	}
-	return nil, apierrors.NewNotFound(schema.GroupResource{}, "")
-}
-
 func (r *Reconciler) getLabelSelector(src *v1alpha1.ApiServerSource) labels.Selector {
 	return labels.SelectorFromSet(resources.Labels(src.Name))
 }
@@ -382,4 +392,31 @@ func (r *Reconciler) updateStatus(ctx context.Context, desired *v1alpha1.ApiServ
 	}
 
 	return cj, err
+}
+
+func (r *Reconciler) UpdateFromLoggingConfigMap(cfg *corev1.ConfigMap) {
+	if cfg != nil {
+		delete(cfg.Data, "_example")
+	}
+
+	logcfg, err := pkgLogging.NewConfigFromConfigMap(cfg)
+	if err != nil {
+		logging.FromContext(r.loggingContext).Warn("failed to create logging config from configmap", zap.String("cfg.Name", cfg.Name))
+		return
+	}
+	r.loggingConfig = logcfg
+	logging.FromContext(r.loggingContext).Info("Update from logging ConfigMap", zap.Any("ConfigMap", cfg))
+}
+
+func (r *Reconciler) UpdateFromMetricsConfigMap(cfg *corev1.ConfigMap) {
+	if cfg != nil {
+		delete(cfg.Data, "_example")
+	}
+
+	r.metricsConfig = &metrics.ExporterOptions{
+		Domain:    metrics.Domain(),
+		Component: component,
+		ConfigMap: cfg.Data,
+	}
+	logging.FromContext(r.loggingContext).Info("Update from metrics ConfigMap", zap.Any("ConfigMap", cfg))
 }

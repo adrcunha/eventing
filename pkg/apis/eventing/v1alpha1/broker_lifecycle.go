@@ -17,13 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
-
-	duckv1alpha1 "github.com/knative/eventing/pkg/apis/duck/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/apis"
+
+	"knative.dev/eventing/pkg/apis/duck"
+	duckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 )
 
 var brokerCondSet = apis.NewLivingConditionSet(
@@ -70,7 +69,7 @@ func (bs *BrokerStatus) MarkIngressFailed(reason, format string, args ...interfa
 }
 
 func (bs *BrokerStatus) PropagateIngressDeploymentAvailability(d *appsv1.Deployment) {
-	if deploymentIsAvailable(&d.Status) {
+	if duck.DeploymentIsAvailable(&d.Status, true) {
 		brokerCondSet.Manage(bs).MarkTrue(BrokerConditionIngress)
 	} else {
 		// I don't know how to propagate the status well, so just give the name of the Deployment
@@ -81,18 +80,6 @@ func (bs *BrokerStatus) PropagateIngressDeploymentAvailability(d *appsv1.Deploym
 
 func (bs *BrokerStatus) MarkTriggerChannelFailed(reason, format string, args ...interface{}) {
 	brokerCondSet.Manage(bs).MarkFalse(BrokerConditionTriggerChannel, reason, format, args...)
-}
-
-func (bs *BrokerStatus) PropagateTriggerChannelReadiness(cs *ChannelStatus) {
-	if cs.IsReady() {
-		brokerCondSet.Manage(bs).MarkTrue(BrokerConditionTriggerChannel)
-	} else {
-		msg := "nil"
-		if cc := chanCondSet.Manage(cs).GetCondition(ChannelConditionReady); cc != nil {
-			msg = cc.Message
-		}
-		bs.MarkTriggerChannelFailed("ChannelNotReady", "trigger Channel is not ready: %s", msg)
-	}
 }
 
 func (bs *BrokerStatus) PropagateTriggerChannelReadinessCRD(cs *duckv1alpha1.ChannelableStatus) {
@@ -109,18 +96,6 @@ func (bs *BrokerStatus) MarkIngressChannelFailed(reason, format string, args ...
 	brokerCondSet.Manage(bs).MarkFalse(BrokerConditionIngressChannel, reason, format, args...)
 }
 
-func (bs *BrokerStatus) PropagateIngressChannelReadiness(cs *ChannelStatus) {
-	if cs.IsReady() {
-		brokerCondSet.Manage(bs).MarkTrue(BrokerConditionIngressChannel)
-	} else {
-		msg := "nil"
-		if cc := chanCondSet.Manage(cs).GetCondition(ChannelConditionReady); cc != nil {
-			msg = cc.Message
-		}
-		bs.MarkIngressChannelFailed("ChannelNotReady", "ingress Channel is not ready: %s", msg)
-	}
-}
-
 func (bs *BrokerStatus) PropagateIngressChannelReadinessCRD(cs *duckv1alpha1.ChannelableStatus) {
 	// TODO: Once you can get a Ready status from Channelable in a generic way, use it here...
 	address := cs.AddressStatus.Address
@@ -135,12 +110,16 @@ func (bs *BrokerStatus) MarkIngressSubscriptionFailed(reason, format string, arg
 	brokerCondSet.Manage(bs).MarkFalse(BrokerConditionIngressSubscription, reason, format, args...)
 }
 
-func (bs *BrokerStatus) PropagateIngressSubscriptionReadiness(ss *SubscriptionStatus) {
+func (bs *BrokerStatus) MarkIngressSubscriptionNotOwned(sub *messagingv1alpha1.Subscription) {
+	bs.MarkIngressSubscriptionFailed("SubscriptionNotOwned", "Subscription %q is not owned by this Broker.", sub.Name)
+}
+
+func (bs *BrokerStatus) PropagateIngressSubscriptionReadiness(ss *messagingv1alpha1.SubscriptionStatus) {
 	if ss.IsReady() {
 		brokerCondSet.Manage(bs).MarkTrue(BrokerConditionIngressSubscription)
 	} else {
 		msg := "nil"
-		if sc := subCondSet.Manage(ss).GetCondition(SubscriptionConditionReady); sc != nil {
+		if sc := ss.GetCondition(messagingv1alpha1.SubscriptionConditionReady); sc != nil {
 			msg = sc.Message
 		}
 		bs.MarkIngressSubscriptionFailed("SubscriptionNotReady", "ingress Subscription is not ready: %s", msg)
@@ -152,24 +131,13 @@ func (bs *BrokerStatus) MarkFilterFailed(reason, format string, args ...interfac
 }
 
 func (bs *BrokerStatus) PropagateFilterDeploymentAvailability(d *appsv1.Deployment) {
-	if deploymentIsAvailable(&d.Status) {
+	if duck.DeploymentIsAvailable(&d.Status, true) {
 		brokerCondSet.Manage(bs).MarkTrue(BrokerConditionFilter)
 	} else {
 		// I don't know how to propagate the status well, so just give the name of the Deployment
 		// for now.
 		bs.MarkFilterFailed("DeploymentUnavailable", "The Deployment '%s' is unavailable.", d.Name)
 	}
-}
-
-func deploymentIsAvailable(d *appsv1.DeploymentStatus) bool {
-	// Check if the Deployment is available.
-	for _, cond := range d.Conditions {
-		if cond.Type == appsv1.DeploymentAvailable {
-			return cond.Status == "True"
-		}
-	}
-	// Unable to find the Available condition, fail open.
-	return true
 }
 
 // SetAddress makes this Broker addressable by setting the hostname. It also
@@ -184,24 +152,4 @@ func (bs *BrokerStatus) SetAddress(url *apis.URL) {
 		bs.Address.URL = nil
 		brokerCondSet.Manage(bs).MarkFalse(BrokerConditionAddressable, "emptyHostname", "hostname is the empty string")
 	}
-}
-
-// MarkDeprecated adds a warning condition that using Channel Provisioners is deprecated
-// and will stop working in the future. Note that this does not affect the Ready condition.
-func (cs *BrokerStatus) MarkDeprecated(reason, msg string) {
-	dc := apis.Condition{
-		Type:               "Deprecated",
-		Reason:             reason,
-		Status:             v1.ConditionTrue,
-		Severity:           apis.ConditionSeverityWarning,
-		Message:            msg,
-		LastTransitionTime: apis.VolatileTime{Inner: metav1.NewTime(time.Now())},
-	}
-	for i, c := range cs.Conditions {
-		if c.Type == dc.Type {
-			cs.Conditions[i] = dc
-			return
-		}
-	}
-	cs.Conditions = append(cs.Conditions, dc)
 }

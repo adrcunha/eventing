@@ -19,16 +19,18 @@ package apiserversource
 import (
 	"context"
 
-	"github.com/knative/eventing/pkg/apis/sources/v1alpha1"
-	"github.com/knative/eventing/pkg/duck"
-	"github.com/knative/eventing/pkg/reconciler"
 	"k8s.io/client-go/tools/cache"
+	"knative.dev/eventing/pkg/apis/sources/v1alpha1"
+	"knative.dev/eventing/pkg/duck"
+	"knative.dev/eventing/pkg/reconciler"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
+	"knative.dev/pkg/metrics"
 
-	eventtypeinformer "github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype"
-	apiserversourceinformer "github.com/knative/eventing/pkg/client/injection/informers/sources/v1alpha1/apiserversource"
-	deploymentinformer "knative.dev/pkg/injection/informers/kubeinformers/appsv1/deployment"
+	eventtypeinformer "knative.dev/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype"
+	apiserversourceinformer "knative.dev/eventing/pkg/client/injection/informers/sources/v1alpha1/apiserversource"
+	deploymentinformer "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment"
+	"knative.dev/pkg/logging"
 )
 
 const (
@@ -50,16 +52,19 @@ func NewController(
 	deploymentInformer := deploymentinformer.Get(ctx)
 	apiServerSourceInformer := apiserversourceinformer.Get(ctx)
 	eventTypeInformer := eventtypeinformer.Get(ctx)
+	resourceInformer := duck.NewResourceInformer(ctx)
 
 	r := &Reconciler{
 		Base:                  reconciler.NewBase(ctx, controllerAgentName, cmw),
 		apiserversourceLister: apiServerSourceInformer.Lister(),
 		deploymentLister:      deploymentInformer.Lister(),
 		source:                GetCfgHost(ctx),
+		loggingContext:        ctx,
 	}
 	impl := controller.NewImpl(r, r.Logger, ReconcilerName)
 
-	r.sinkReconciler = duck.NewInjectionSinkReconciler(ctx, impl.EnqueueKey)
+	r.resourceTracker = resourceInformer.NewTracker(impl.EnqueueKey, controller.GetTrackerLease(ctx))
+	r.sinkReconciler = duck.NewSinkReconciler(ctx, impl.EnqueueKey)
 
 	r.Logger.Info("Setting up event handlers")
 	apiServerSourceInformer.Informer().AddEventHandler(controller.HandleAll(impl.Enqueue))
@@ -73,6 +78,9 @@ func NewController(
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("ApiServerSource")),
 		Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 	})
+
+	cmw.Watch(logging.ConfigMapName(), r.UpdateFromLoggingConfigMap)
+	cmw.Watch(metrics.ConfigMapName(), r.UpdateFromMetricsConfigMap)
 
 	return impl
 }

@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"time"
 
+	cloudevents "github.com/cloudevents/sdk-go"
+	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,9 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/cache"
-
-	cloudevents "github.com/cloudevents/sdk-go"
-	"go.uber.org/zap"
+	"knative.dev/pkg/source"
 )
 
 type Adapter interface {
@@ -41,6 +41,8 @@ const (
 	RefMode = "Ref"
 	// ResourceMode produces payloads of ResourceEvent
 	ResourceMode = "Resource"
+
+	resourceGroup = "apiserversources.sources.eventing.knative.dev"
 )
 
 // Options hold the options for the Adapter.
@@ -50,10 +52,13 @@ type Options struct {
 	GVRCs     []GVRC
 }
 
-// GVRC is a pairing of GroupVersionResource and Controller flag.
+// GVRC is a combination of GroupVersionResource, Controller flag, LabelSelector and OwnerRef
 type GVRC struct {
-	GVR        schema.GroupVersionResource
-	Controller bool
+	GVR             schema.GroupVersionResource
+	Controller      bool
+	LabelSelector   string
+	OwnerApiVersion string
+	OwnerKind       string
 }
 
 type adapter struct {
@@ -66,9 +71,13 @@ type adapter struct {
 
 	mode     string
 	delegate eventDelegate
+	reporter source.StatsReporter
+	name     string
 }
 
-func NewAdaptor(source string, k8sClient dynamic.Interface, ceClient cloudevents.Client, logger *zap.SugaredLogger, opt Options) Adapter {
+func NewAdaptor(source string, k8sClient dynamic.Interface,
+	ceClient cloudevents.Client, logger *zap.SugaredLogger,
+	opt Options, reporter source.StatsReporter, name string) Adapter {
 	mode := opt.Mode
 	switch mode {
 	case ResourceMode, RefMode:
@@ -87,6 +96,8 @@ func NewAdaptor(source string, k8sClient dynamic.Interface, ceClient cloudevents
 		gvrcs:     opt.GVRCs,
 		namespace: opt.Namespace,
 		mode:      mode,
+		reporter:  reporter,
+		name:      name,
 	}
 	return a
 }
@@ -101,21 +112,26 @@ func (a *adapter) Start(stopCh <-chan struct{}) error {
 	stop := make(chan struct{})
 
 	resyncPeriod := time.Duration(10 * time.Hour)
-
 	var d eventDelegate
 	switch a.mode {
 	case ResourceMode:
 		d = &resource{
-			ce:     a.ce,
-			source: a.source,
-			logger: a.logger,
+			ce:        a.ce,
+			source:    a.source,
+			logger:    a.logger,
+			reporter:  a.reporter,
+			namespace: a.namespace,
+			name:      a.name,
 		}
 
 	case RefMode:
 		d = &ref{
-			ce:     a.ce,
-			source: a.source,
-			logger: a.logger,
+			ce:        a.ce,
+			source:    a.source,
+			logger:    a.logger,
+			reporter:  a.reporter,
+			namespace: a.namespace,
+			name:      a.name,
 		}
 
 	default:
@@ -124,15 +140,26 @@ func (a *adapter) Start(stopCh <-chan struct{}) error {
 
 	for _, gvrc := range a.gvrcs {
 		lw := &cache.ListWatch{
-			ListFunc:  asUnstructuredLister(a.k8s.Resource(gvrc.GVR).Namespace(a.namespace).List),
-			WatchFunc: asUnstructuredWatcher(a.k8s.Resource(gvrc.GVR).Namespace(a.namespace).Watch),
+			ListFunc:  asUnstructuredLister(a.k8s.Resource(gvrc.GVR).Namespace(a.namespace).List, gvrc.LabelSelector),
+			WatchFunc: asUnstructuredWatcher(a.k8s.Resource(gvrc.GVR).Namespace(a.namespace).Watch, gvrc.LabelSelector),
 		}
 
 		if gvrc.Controller {
 			d.addControllerWatch(gvrc.GVR)
 		}
 
-		reflector := cache.NewReflector(lw, &unstructured.Unstructured{}, d, resyncPeriod)
+		var store cache.Store
+		if gvrc.OwnerApiVersion != "" || gvrc.OwnerKind != "" {
+			store = &controller{
+				apiVersion: gvrc.OwnerApiVersion,
+				kind:       gvrc.OwnerKind,
+				delegate:   store,
+			}
+		} else {
+			store = d
+		}
+
+		reflector := cache.NewReflector(lw, &unstructured.Unstructured{}, store, resyncPeriod)
 		go reflector.Run(stop)
 	}
 
@@ -143,8 +170,11 @@ func (a *adapter) Start(stopCh <-chan struct{}) error {
 
 type unstructuredLister func(metav1.ListOptions) (*unstructured.UnstructuredList, error)
 
-func asUnstructuredLister(ulist unstructuredLister) cache.ListFunc {
+func asUnstructuredLister(ulist unstructuredLister, selector string) cache.ListFunc {
 	return func(opts metav1.ListOptions) (runtime.Object, error) {
+		if selector != "" && opts.LabelSelector == "" {
+			opts.LabelSelector = selector
+		}
 		ul, err := ulist(opts)
 		if err != nil {
 			return nil, err
@@ -153,8 +183,11 @@ func asUnstructuredLister(ulist unstructuredLister) cache.ListFunc {
 	}
 }
 
-func asUnstructuredWatcher(wf cache.WatchFunc) cache.WatchFunc {
+func asUnstructuredWatcher(wf cache.WatchFunc, selector string) cache.WatchFunc {
 	return func(lo metav1.ListOptions) (watch.Interface, error) {
+		if selector != "" && lo.LabelSelector == "" {
+			lo.LabelSelector = selector
+		}
 		return wf(lo)
 	}
 }

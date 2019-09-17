@@ -23,16 +23,18 @@ import (
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 
-	"github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	"github.com/knative/eventing/pkg/duck"
-	"github.com/knative/eventing/pkg/reconciler"
+	"knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	"knative.dev/eventing/pkg/duck"
+	"knative.dev/eventing/pkg/reconciler"
+	apisduck "knative.dev/pkg/apis/duck"
 
-	"knative.dev/pkg/injection/informers/kubeinformers/corev1/service"
+	"knative.dev/pkg/client/injection/kube/informers/core/v1/service"
 
-	"github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/broker"
-	"github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/channel"
-	"github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/subscription"
-	"github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/trigger"
+	"knative.dev/eventing/pkg/client/injection/informers/eventing/v1alpha1/broker"
+	"knative.dev/eventing/pkg/client/injection/informers/eventing/v1alpha1/trigger"
+	"knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/subscription"
+	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
+	"knative.dev/pkg/injection/clients/dynamicclient"
 )
 
 const (
@@ -52,7 +54,6 @@ func NewController(
 ) *controller.Impl {
 
 	triggerInformer := trigger.Get(ctx)
-	channelInformer := channel.Get(ctx)
 	subscriptionInformer := subscription.Get(ctx)
 	brokerInformer := broker.Get(ctx)
 	serviceInformer := service.Get(ctx)
@@ -61,7 +62,6 @@ func NewController(
 	r := &Reconciler{
 		Base:               reconciler.NewBase(ctx, controllerAgentName, cmw),
 		triggerLister:      triggerInformer.Lister(),
-		channelLister:      channelInformer.Lister(),
 		subscriptionLister: subscriptionInformer.Lister(),
 		brokerLister:       brokerInformer.Lister(),
 		serviceLister:      serviceInformer.Lister(),
@@ -74,10 +74,20 @@ func NewController(
 	// Tracker is used to notify us that a Trigger's Broker has changed so that
 	// we can reconcile.
 	r.resourceTracker = resourceInformer.NewTracker(impl.EnqueueKey, controller.GetTrackerLease(ctx))
+	r.kresourceInformerFactory = KResourceTypedInformerFactory(ctx)
 
 	subscriptionInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Trigger")),
 		Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 	})
 	return impl
+}
+
+func KResourceTypedInformerFactory(ctx context.Context) apisduck.InformerFactory {
+	return &apisduck.TypedInformerFactory{
+		Client:       dynamicclient.Get(ctx),
+		Type:         &duckv1alpha1.KResource{},
+		ResyncPeriod: controller.GetResyncPeriod(ctx),
+		StopChannel:  ctx.Done(),
+	}
 }

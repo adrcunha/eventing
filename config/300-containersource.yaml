@@ -28,7 +28,6 @@ spec:
     - knative
     - eventing
     - sources
-    - importers
     kind: ContainerSource
     plural: containersources
   scope: Namespaced
@@ -90,4 +89,7 @@ spec:
             sinkUri:
               type: string
           type: object
-  version: v1alpha1
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true

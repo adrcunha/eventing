@@ -19,11 +19,11 @@ package v1alpha1
 import (
 	"testing"
 
-	eventingduck "github.com/knative/eventing/pkg/apis/duck/v1alpha1"
+	eventingduck "knative.dev/eventing/pkg/apis/duck/v1alpha1"
 	"knative.dev/pkg/apis"
 )
 
-func TestImMemoryChannelValidation(t *testing.T) {
+func TestInMemoryChannelValidation(t *testing.T) {
 	tests := []CRDTest{{
 		name: "empty",
 		cr: &InMemoryChannel{

@@ -22,12 +22,12 @@ import (
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 
-	"github.com/knative/eventing/pkg/duck"
-	"github.com/knative/eventing/pkg/reconciler"
+	"knative.dev/eventing/pkg/duck"
+	"knative.dev/eventing/pkg/reconciler"
 
-	"knative.dev/pkg/injection/informers/apiextinformers/apiextensionsv1beta1/crd"
+	crd "knative.dev/pkg/client/injection/apiextensions/informers/apiextensions/v1beta1/customresourcedefinition"
 
-	"github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/subscription"
+	"knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/subscription"
 )
 
 const (

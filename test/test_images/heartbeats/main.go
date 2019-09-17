@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/knative/eventing/pkg/kncloudevents"
+	"knative.dev/eventing/pkg/kncloudevents"
 
 	"github.com/cloudevents/sdk-go/pkg/cloudevents"
 	"github.com/cloudevents/sdk-go/pkg/cloudevents/types"
@@ -86,7 +86,7 @@ func main() {
 	}
 
 	source := types.ParseURLRef(
-		fmt.Sprintf("https://github.com/knative/eventing/test/heartbeats/#%s/%s", env.Namespace, env.Name))
+		fmt.Sprintf("https://knative.dev/eventing/test/heartbeats/#%s/%s", env.Namespace, env.Name))
 	log.Printf("Heartbeats Source: %s", source)
 
 	hb := &Heartbeat{
@@ -106,12 +106,12 @@ func main() {
 					"heart": "yes",
 					"beats": true,
 				},
-			}.AsV02(),
+			}.AsV03(),
 			Data: hb,
 		}
 
 		log.Printf("sending cloudevent to %s", sink)
-		if _, err := c.Send(context.Background(), event); err != nil {
+		if _, _, err := c.Send(context.Background(), event); err != nil {
 			log.Printf("failed to send cloudevent: %s", err.Error())
 		}
 		// Wait for next tick

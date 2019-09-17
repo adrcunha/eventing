@@ -24,23 +24,15 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/knative/eventing/test/base/resources"
-	"github.com/knative/eventing/test/common"
-	"github.com/knative/test-infra/shared/junit"
-	"github.com/knative/test-infra/shared/testgrid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/eventing/test/base/resources"
+	"knative.dev/eventing/test/common"
+	"knative.dev/test-infra/shared/junit"
+	"knative.dev/test-infra/shared/testgrid"
 )
 
-func TestLatencyForNatssBrokerTrigger(t *testing.T) {
-	testLatencyForBrokerTrigger(t, common.NatssChannelTypeMeta)
-}
-
-func TestLatencyForKafkaBrokerTrigger(t *testing.T) {
-	testLatencyForBrokerTrigger(t, common.KafkaChannelTypeMeta)
-}
-
 func TestLatencyForInMemoryBrokerTrigger(t *testing.T) {
-	testLatencyForBrokerTrigger(t, common.InMemoryChannelTypeMeta)
+	testLatencyForBrokerTrigger(t, common.GetChannelTypeMeta(resources.InMemoryChannelKind))
 }
 
 func testLatencyForBrokerTrigger(t *testing.T, channelTypeMeta *metav1.TypeMeta) {
@@ -65,7 +57,7 @@ func testLatencyForBrokerTrigger(t *testing.T, channelTypeMeta *metav1.TypeMeta)
 	client.CreateRBACResourcesForBrokers()
 
 	// create a new broker
-	client.CreateBrokerOrFail(brokerName, channelTypeMeta, "")
+	client.CreateBrokerOrFail(brokerName, channelTypeMeta)
 	client.WaitForResourceReady(brokerName, common.BrokerTypeMeta)
 	brokerURL, err := client.GetAddressableURI(brokerName, common.BrokerTypeMeta)
 	if err != nil {

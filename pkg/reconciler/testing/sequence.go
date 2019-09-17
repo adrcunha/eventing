@@ -20,10 +20,10 @@ import (
 	"context"
 	"time"
 
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
-	"github.com/knative/eventing/pkg/apis/messaging/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	eventingduckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	"knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 )
 
 // SequenceOption enables further configuration of a Sequence.
@@ -54,13 +54,13 @@ func WithSequenceDeleted(p *v1alpha1.Sequence) {
 	p.ObjectMeta.SetDeletionTimestamp(&deleteTime)
 }
 
-func WithSequenceChannelTemplateSpec(cts v1alpha1.ChannelTemplateSpec) SequenceOption {
+func WithSequenceChannelTemplateSpec(cts *eventingduckv1alpha1.ChannelTemplateSpec) SequenceOption {
 	return func(p *v1alpha1.Sequence) {
 		p.Spec.ChannelTemplate = cts
 	}
 }
 
-func WithSequenceSteps(steps []eventingv1alpha1.SubscriberSpec) SequenceOption {
+func WithSequenceSteps(steps []v1alpha1.SubscriberSpec) SequenceOption {
 	return func(p *v1alpha1.Sequence) {
 		p.Spec.Steps = steps
 	}

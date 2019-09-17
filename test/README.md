@@ -57,6 +57,22 @@ If you have set up a running environment that meets
 [the e2e test environment requirements](#environment-requirements), you can run
 with `test/e2e-tests.sh --run-tests --skip-knative-setup`.
 
+### Performance tests
+
+[`performance-tests.sh`](./performance-tests.sh) is the entry point for running
+all performance tests.
+
+You can run it simply with:
+
+```shell
+test/performance-tests.sh
+```
+
+The steps and flags are exactly the same as e2e tests described above. After the
+tests are done, test results named as `artifacts` will be saved under
+`./performance`. You can also check the historic test result through
+[testgrid](https://testgrid.knative.dev/eventing#performance).
+
 ## Running tests with `go test` command
 
 ### Running unit tests
@@ -81,14 +97,11 @@ to specify the build tag `e2e`.
 go test -v -tags=e2e -count=1 ./test/e2e
 ```
 
-By default, it will run all applicable tests against the cluster's default
-`ClusterChannelProvisioner`.
-
-If you want to run tests against other `ClusterChannelProvisioners`, you can
-specify them through `-clusterChannelProvisioners`.
+By default, tests run against images with the `latest` tag. To override this
+bevavior you can specify a different tag through `-tag`:
 
 ```bash
-go test -v -tags=e2e -count=1 ./test/e2e -clusterChannelProvisioners=in-memory,gcp-pubsub
+go test -v -tags=e2e -count=1 ./test/e2e -tag e2e
 ```
 
 #### One test case
@@ -98,16 +111,6 @@ To run one e2e test case, e.g. `TestSingleBinaryEventForChannel`, use
 
 ```bash
 go test -v -tags=e2e -count=1 ./test/e2e -run ^TestSingleBinaryEventForChannel$
-```
-
-By default, it will run the test against the default
-`ClusterChannelProvisioner`.
-
-If you want to run it against another `ClusterChannelProvisioner`, you can
-specify it through `-clusterChannelProvisioners`.
-
-```bash
-go test -v -tags=e2e -count=1 ./test/e2e -run ^TestSingleBinaryEventForChannel$ -clusterChannelProvisioners=in-memory
 ```
 
 ## Environment requirements
@@ -137,11 +140,15 @@ build and push the test images used by the e2e tests. It requires:
 To run the script for all end to end test images:
 
 ```bash
-./test/upload-test-images.sh e2e
+./test/upload-test-images.sh
 ```
 
-A docker tag is mandatory to avoid issues with using `latest` tag for images
-deployed in GCR.
+For images deployed in GCR, a docker tag is mandatory to avoid issues with using
+`latest` tag:
+
+```bash
+./test/upload-test-images.sh e2e
+```
 
 ### Adding new test images
 

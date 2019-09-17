@@ -20,11 +20,11 @@ import (
 	"context"
 	"time"
 
-	duckv1alpha1 "github.com/knative/eventing/pkg/apis/duck/v1alpha1"
-	"github.com/knative/eventing/pkg/apis/messaging/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	duckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
+	"knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 	"knative.dev/pkg/apis"
 )
 
@@ -121,9 +121,7 @@ func WithInMemoryChannelAddress(a string) InMemoryChannelOption {
 
 func WithInMemoryChannelStatusSubscribers(subscriberStatuses []duckv1alpha1.SubscriberStatus) InMemoryChannelOption {
 	return func(imc *v1alpha1.InMemoryChannel) {
-		imc.Status.SubscribableTypeStatus = duckv1alpha1.SubscribableTypeStatus{
-			SubscribableStatus: &duckv1alpha1.SubscribableStatus{
-				Subscribers: subscriberStatuses},
-		}
+		imc.Status.SetSubscribableTypeStatus(duckv1alpha1.SubscribableStatus{
+			Subscribers: subscriberStatuses})
 	}
 }

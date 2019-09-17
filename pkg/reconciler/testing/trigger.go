@@ -20,10 +20,20 @@ import (
 	"context"
 	"time"
 
-	"github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+)
+
+const (
+	unmarshalFailedDependencyAnnotation = "{" +
+		"\"kind\":{CronJobSource}, " +
+		"\"name\":\"test-cronjob-source\"," +
+		"\"apiVersion\":\"sources.eventing.knative.dev/v1alpha1\"" +
+		"}"
 )
 
 // TriggerOption enables further configuration of a Trigger.
@@ -49,13 +59,13 @@ func NewTrigger(name, namespace, broker string, to ...TriggerOption) *v1alpha1.T
 
 func WithTriggerSubscriberURI(uri string) TriggerOption {
 	return func(t *v1alpha1.Trigger) {
-		t.Spec.Subscriber = &v1alpha1.SubscriberSpec{URI: &uri}
+		t.Spec.Subscriber = &messagingv1alpha1.SubscriberSpec{URI: &uri}
 	}
 }
 
 func WithTriggerSubscriberRef(gvk metav1.GroupVersionKind, name string) TriggerOption {
 	return func(t *v1alpha1.Trigger) {
-		t.Spec.Subscriber = &v1alpha1.SubscriberSpec{
+		t.Spec.Subscriber = &messagingv1alpha1.SubscriberSpec{
 			Ref: &corev1.ObjectReference{
 				APIVersion: apiVersion(gvk),
 				Kind:       gvk.Kind,
@@ -99,6 +109,42 @@ func WithTriggerSubscribed() TriggerOption {
 func WithTriggerStatusSubscriberURI(uri string) TriggerOption {
 	return func(t *v1alpha1.Trigger) {
 		t.Status.SubscriberURI = uri
+	}
+}
+
+func WithUnmarshalFailedDependencyAnnotation() TriggerOption {
+	return func(t *v1alpha1.Trigger) {
+		if t.Annotations == nil {
+			t.Annotations = make(map[string]string)
+		}
+		t.Annotations[v1alpha1.DependencyAnnotation] = unmarshalFailedDependencyAnnotation
+	}
+}
+
+func WithDependencyAnnotation(dependencyAnnotation string) TriggerOption {
+	return func(t *v1alpha1.Trigger) {
+		if t.Annotations == nil {
+			t.Annotations = make(map[string]string)
+		}
+		t.Annotations[v1alpha1.DependencyAnnotation] = dependencyAnnotation
+	}
+}
+
+func WithTriggerDependencyReady() TriggerOption {
+	return func(t *v1alpha1.Trigger) {
+		t.Status.MarkDependencySucceeded()
+	}
+}
+
+func WithTriggerDependencyFailed(reason, message string) TriggerOption {
+	return func(t *v1alpha1.Trigger) {
+		t.Status.MarkDependencyFailed(reason, message)
+	}
+}
+
+func WithTriggerDependencyUnknown(reason, message string) TriggerOption {
+	return func(t *v1alpha1.Trigger) {
+		t.Status.MarkDependencyUnknown(reason, message)
 	}
 }
 

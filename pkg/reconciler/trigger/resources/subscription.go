@@ -20,36 +20,38 @@ import (
 	"fmt"
 	"net/url"
 
-	"knative.dev/pkg/kmeta"
-
-	eventingv1alpha1 "github.com/knative/eventing/pkg/apis/eventing/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/pkg/kmeta"
+
+	eventingv1alpha1 "knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+	"knative.dev/eventing/pkg/utils"
 )
 
 // NewSubscription returns a placeholder subscription for trigger 't', from brokerTrigger to 'uri'
 // replying to brokerIngress.
-func NewSubscription(t *eventingv1alpha1.Trigger, brokerTrigger, brokerIngress *corev1.ObjectReference, uri *url.URL) *eventingv1alpha1.Subscription {
+func NewSubscription(t *eventingv1alpha1.Trigger, brokerTrigger, brokerIngress *corev1.ObjectReference, uri *url.URL) *messagingv1alpha1.Subscription {
 	uriString := uri.String()
-	return &eventingv1alpha1.Subscription{
+	return &messagingv1alpha1.Subscription{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    t.Namespace,
-			GenerateName: fmt.Sprintf("%s-%s-", t.Spec.Broker, t.Name),
+			Namespace: t.Namespace,
+			Name:      utils.GenerateFixedName(t, fmt.Sprintf("%s-%s", t.Spec.Broker, t.Name)),
 			OwnerReferences: []metav1.OwnerReference{
 				*kmeta.NewControllerRef(t),
 			},
 			Labels: SubscriptionLabels(t),
 		},
-		Spec: eventingv1alpha1.SubscriptionSpec{
+		Spec: messagingv1alpha1.SubscriptionSpec{
 			Channel: corev1.ObjectReference{
 				APIVersion: brokerTrigger.APIVersion,
 				Kind:       brokerTrigger.Kind,
 				Name:       brokerTrigger.Name,
 			},
-			Subscriber: &eventingv1alpha1.SubscriberSpec{
+			Subscriber: &messagingv1alpha1.SubscriberSpec{
 				URI: &uriString,
 			},
-			Reply: &eventingv1alpha1.ReplyStrategy{
+			Reply: &messagingv1alpha1.ReplyStrategy{
 				Channel: &corev1.ObjectReference{
 					APIVersion: brokerIngress.APIVersion,
 					Kind:       brokerIngress.Kind,

@@ -17,15 +17,12 @@ limitations under the License.
 package common
 
 import (
-	"github.com/knative/eventing/test/base/resources"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/eventing/test/base/resources"
 )
 
-// ChannelTypeMeta is the TypeMeta ref for Channel.
-var ChannelTypeMeta = EventingTypeMeta(resources.ChannelKind)
-
 // SubscriptionTypeMeta is the TypeMeta ref for Subscription.
-var SubscriptionTypeMeta = EventingTypeMeta(resources.SubscriptionKind)
+var SubscriptionTypeMeta = MessagingTypeMeta(resources.SubscriptionKind)
 
 // BrokerTypeMeta is the TypeMeta ref for Broker.
 var BrokerTypeMeta = EventingTypeMeta(resources.BrokerKind)
@@ -58,17 +55,19 @@ func SourcesTypeMeta(kind string) *metav1.TypeMeta {
 	}
 }
 
-// KafkaChannelTypeMeta is the TypeMeta ref for KafkaChannel.
-var KafkaChannelTypeMeta = MessagingTypeMeta(resources.KafkaChannelKind)
+// GetChannelTypeMeta gets the actual typemeta of the typed channel.
+func GetChannelTypeMeta(channelKind string) *metav1.TypeMeta {
+	return MessagingTypeMeta(channelKind)
+}
 
-// InMemoryChannelTypeMeta is the TypeMeta ref for InMemoryChannel.
-var InMemoryChannelTypeMeta = MessagingTypeMeta(resources.InMemoryChannelKind)
-
-// NatssChannelTypeMeta is the TypeMeta ref for NatssChannel.
-var NatssChannelTypeMeta = MessagingTypeMeta(resources.NatssChannelKind)
+// ChannelTypeMeta is the TypeMeta ref for Channel.
+var ChannelTypeMeta = MessagingTypeMeta(resources.ChannelKind)
 
 // SequenceTypeMeta is the TypeMeta ref for Sequence.
 var SequenceTypeMeta = MessagingTypeMeta(resources.SequenceKind)
+
+// ParallelTypeMeta is the TypeMeta ref for Parallel.
+var ParallelTypeMeta = MessagingTypeMeta(resources.ParallelKind)
 
 // MessagingTypeMeta returns the TypeMeta ref for an eventing messaing resource.
 func MessagingTypeMeta(kind string) *metav1.TypeMeta {

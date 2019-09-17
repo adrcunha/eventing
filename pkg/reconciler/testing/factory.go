@@ -34,9 +34,9 @@ import (
 	"knative.dev/pkg/controller"
 	logtesting "knative.dev/pkg/logging/testing"
 
-	fakeeventingclient "github.com/knative/eventing/pkg/client/injection/client/fake"
+	fakeeventingclient "knative.dev/eventing/pkg/client/injection/client/fake"
+	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
 	fakedynamicclient "knative.dev/pkg/injection/clients/dynamicclient/fake"
-	fakekubeclient "knative.dev/pkg/injection/clients/kubeclient/fake"
 
 	. "knative.dev/pkg/reconciler/testing"
 )
@@ -69,11 +69,6 @@ func MakeFactory(ctor Ctor, unstructured bool) Factory {
 			addTo(dynamicScheme)
 		}
 
-		allObjects := ls.GetAllObjects()
-		if unstructured {
-			allObjects = ToUnstructured(t, allObjects)
-		}
-
 		// The dynamic client's support for patching is BS.  Implement it
 		// here via PrependReactor (this can be overridden below by the
 		// provided reactors).
@@ -86,9 +81,6 @@ func MakeFactory(ctor Ctor, unstructured bool) Factory {
 		ctx = controller.WithEventRecorder(ctx, eventRecorder)
 		statsReporter := &FakeStatsReporter{}
 		//ctx = reconciler.WithStatsReporter(ctx, statsReporter) // TODO: upstream stats interface from eventing to PKG
-
-		PrependGenerateNameReactor(&client.Fake)
-		PrependGenerateNameReactor(&dynamicClient.Fake)
 
 		// Set up our Controller from the fakes.
 		c := ctor(ctx, &ls, configmap.NewFixedWatcher())

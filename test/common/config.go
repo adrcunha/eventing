@@ -17,56 +17,27 @@ limitations under the License.
 package common
 
 import (
-	"github.com/knative/eventing/test/base/resources"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"knative.dev/eventing/test/base/resources"
 )
 
-// DefaultClusterChannelProvisioner is the default ClusterChannelProvisioner we will run tests against.
-const DefaultClusterChannelProvisioner = resources.InMemoryProvisioner
+// DefaultChannel is the default channel we will run tests against.
+const DefaultChannel = resources.InMemoryChannelKind
 
-// ValidProvisionersMap saves the provisioner-features mapping.
-// Each pair means the provisioner support the list of features.
-var ValidProvisionersMap = map[string]ChannelConfig{
-	resources.InMemoryProvisioner: {
-		Features:     []Feature{FeatureBasic},
-		CRDSupported: true,
-	},
-	resources.GCPPubSubProvisioner: {
-		Features: []Feature{FeatureBasic, FeatureRedelivery, FeaturePersistence},
-	},
-	resources.KafkaProvisioner: {
-		Features:     []Feature{FeatureBasic, FeatureRedelivery, FeaturePersistence},
-		CRDSupported: true,
-	},
-	resources.NatssProvisioner: {
-		Features:     []Feature{FeatureBasic, FeatureRedelivery, FeaturePersistence},
-		CRDSupported: true,
-	},
+// ChannelFeatureMap saves the channel-features mapping.
+// Each pair means the channel support the list of features.
+var ChannelFeatureMap = map[string][]Feature{
+	resources.InMemoryChannelKind: {FeatureBasic},
 }
 
-// ChannelConfig includes general configuration for a Channel provisioner.
-type ChannelConfig struct {
-	Features     []Feature
-	CRDSupported bool
-}
-
-// ProvisionerChannelMap saves the mapping between provisioners and CRD channel typemeta.
-// TODO(Fredy-Z): this map will not be needed anymore when we delete the provisioner implementation.
-var ProvisionerChannelMap = map[string]*metav1.TypeMeta{
-	resources.KafkaProvisioner:    KafkaChannelTypeMeta,
-	resources.InMemoryProvisioner: InMemoryChannelTypeMeta,
-	resources.NatssProvisioner:    NatssChannelTypeMeta,
-}
-
-// Feature is the feature supported by the Channel provisioner.
+// Feature is the feature supported by the channel.
 type Feature string
 
 const (
-	// FeatureBasic is the feature that should be supported by all Channel provisioners
+	// FeatureBasic is the feature that should be supported by all channels.
 	FeatureBasic Feature = "basic"
 	// FeatureRedelivery means if downstream rejects an event, that request will be attempted again.
 	FeatureRedelivery Feature = "redelivery"
-	// FeaturePersistence means if Channel's Pod goes down, all events already ACKed by the Channel
+	// FeaturePersistence means if channel's Pod goes down, all events already ACKed by the channel
 	// will persist and be retransmitted when the Pod restarts.
 	FeaturePersistence Feature = "persistence"
 )

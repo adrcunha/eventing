@@ -21,10 +21,10 @@ package fake
 import (
 	"context"
 
-	fake "github.com/knative/eventing/pkg/client/clientset/versioned/fake"
-	client "github.com/knative/eventing/pkg/client/injection/client"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	fake "knative.dev/eventing/pkg/client/clientset/versioned/fake"
+	client "knative.dev/eventing/pkg/client/injection/client"
 	injection "knative.dev/pkg/injection"
 	logging "knative.dev/pkg/logging"
 )
@@ -47,8 +47,8 @@ func With(ctx context.Context, objects ...runtime.Object) (context.Context, *fak
 func Get(ctx context.Context) *fake.Clientset {
 	untyped := ctx.Value(client.Key{})
 	if untyped == nil {
-		logging.FromContext(ctx).Fatalf(
-			"Unable to fetch %T from context.", (*fake.Clientset)(nil))
+		logging.FromContext(ctx).Panic(
+			"Unable to fetch knative.dev/eventing/pkg/client/clientset/versioned/fake.Clientset from context.")
 	}
 	return untyped.(*fake.Clientset)
 }

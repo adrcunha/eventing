@@ -21,9 +21,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/knative/eventing/pkg/provisioners/multichannelfanout"
-	"github.com/knative/eventing/pkg/provisioners/swappable"
 	"go.uber.org/zap"
+	"knative.dev/eventing/pkg/channel/multichannelfanout"
+	"knative.dev/eventing/pkg/channel/swappable"
 	pkgtracing "knative.dev/pkg/tracing"
 )
 

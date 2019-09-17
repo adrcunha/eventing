@@ -17,26 +17,46 @@ limitations under the License.
 package apiserversource
 
 import (
+	"os"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"knative.dev/pkg/configmap"
-
 	logtesting "knative.dev/pkg/logging/testing"
 	. "knative.dev/pkg/reconciler/testing"
 
 	// Fake injection informers
-	_ "github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype/fake"
-	_ "github.com/knative/eventing/pkg/client/injection/informers/sources/v1alpha1/apiserversource/fake"
-	_ "knative.dev/pkg/injection/informers/kubeinformers/appsv1/deployment/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/sources/v1alpha1/apiserversource/fake"
+	_ "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment/fake"
 )
 
 func TestNew(t *testing.T) {
 	defer logtesting.ClearAll()
 	ctx, _ := SetupFakeContext(t)
 	ctx = withCfgHost(ctx, &rest.Config{Host: "unit_test"})
-
-	c := NewController(ctx, configmap.NewFixedWatcher())
+	os.Setenv("METRICS_DOMAIN", "knative.dev/eventing")
+	c := NewController(ctx, configmap.NewFixedWatcher(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "config-observability",
+			Namespace: "knative-eventing",
+		},
+		Data: map[string]string{
+			"_example": "test-config",
+		},
+	}, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "config-logging",
+			Namespace: "knative-eventing",
+		},
+		Data: map[string]string{
+			"zap-logger-config":   "test-config",
+			"loglevel.controller": "info",
+			"loglevel.webhook":    "info",
+		},
+	}))
 
 	if c == nil {
 		t.Fatal("Expected NewController to return a non-nil value")

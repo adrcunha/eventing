@@ -17,25 +17,86 @@ limitations under the License.
 package cronjobsource
 
 import (
+	"os"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/configmap"
 	logtesting "knative.dev/pkg/logging/testing"
 	. "knative.dev/pkg/reconciler/testing"
 
 	// Fake injection informers
-	_ "github.com/knative/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype/fake"
-	_ "github.com/knative/eventing/pkg/client/injection/informers/sources/v1alpha1/cronjobsource/fake"
-	_ "knative.dev/pkg/injection/informers/kubeinformers/appsv1/deployment/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/eventing/v1alpha1/eventtype/fake"
+	_ "knative.dev/eventing/pkg/client/injection/informers/sources/v1alpha1/cronjobsource/fake"
+	_ "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment/fake"
 )
 
 func TestNew(t *testing.T) {
+	testCases := map[string]struct {
+		setEnv bool
+	}{
+		"image not set": {},
+		"image set": {
+			setEnv: true,
+		},
+	}
 	defer logtesting.ClearAll()
-	ctx, _ := SetupFakeContext(t)
+	for n, tc := range testCases {
+		t.Run(n, func(t *testing.T) {
+			if tc.setEnv {
+				if err := os.Setenv("CRONJOB_RA_IMAGE", "anything"); err != nil {
+					t.Fatalf("Failed to set env var: %v", err)
+				}
+				defer func() {
+					if err := os.Unsetenv("CRONJOB_RA_IMAGE"); err != nil {
+						t.Fatalf("Failed to unset env var: %v", err)
+					}
+				}()
 
-	c := NewController(ctx, configmap.NewFixedWatcher())
+				if err := os.Setenv("METRICS_DOMAIN", "knative.dev/eventing"); err != nil {
+					t.Fatalf("Failed to set env var: %v", err)
+				}
+				defer func() {
+					if err := os.Unsetenv("METRICS_DOMAIN"); err != nil {
+						t.Fatalf("Failed to unset env var: %v", err)
+					}
+				}()
+			} else {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Errorf("Expected NewController to panic, nothing recovered.")
+					}
+				}()
+			}
 
-	if c == nil {
-		t.Fatal("Expected NewController to return a non-nil value")
+			ctx, _ := SetupFakeContext(t)
+			c := NewController(ctx, configmap.NewStaticWatcher(
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "config-observability",
+						Namespace: "knative-eventing",
+					},
+					Data: map[string]string{
+						"_example": "test-config",
+					},
+				}, &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "config-logging",
+						Namespace: "knative-eventing",
+					},
+					Data: map[string]string{
+						"zap-logger-config":   "test-config",
+						"loglevel.controller": "info",
+						"loglevel.webhook":    "info",
+					},
+				},
+			))
+
+			if c == nil {
+				t.Fatal("Expected NewController to return a non-nil value")
+			}
+		})
 	}
 }

@@ -22,7 +22,7 @@ import (
 	"log"
 
 	cloudevents "github.com/cloudevents/sdk-go"
-	"github.com/knative/eventing/test/base/resources"
+	"knative.dev/eventing/test/base/resources"
 )
 
 var (
@@ -34,7 +34,7 @@ func init() {
 }
 
 func gotEvent(event cloudevents.Event, resp *cloudevents.EventResponse) error {
-	ctx := event.Context.AsV02()
+	ctx := event.Context.AsV03()
 
 	data := &resources.CloudEventBaseData{}
 	if err := event.DataAs(data); err != nil {

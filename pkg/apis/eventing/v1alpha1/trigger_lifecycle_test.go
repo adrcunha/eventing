@@ -20,7 +20,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/knative/eventing/pkg/apis/eventing"
+	"knative.dev/eventing/pkg/apis/eventing"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 	"knative.dev/pkg/apis"
 
 	"github.com/google/go-cmp/cmp"
@@ -37,6 +38,11 @@ var (
 
 	triggerConditionBroker = apis.Condition{
 		Type:   TriggerConditionBroker,
+		Status: corev1.ConditionTrue,
+	}
+
+	triggerConditionDependency = apis.Condition{
+		Type:   TriggerConditionDependency,
 		Status: corev1.ConditionTrue,
 	}
 
@@ -70,6 +76,7 @@ func TestTriggerGetCondition(t *testing.T) {
 				Conditions: []apis.Condition{
 					triggerConditionBroker,
 					triggerConditionSubscribed,
+					triggerConditionDependency,
 				},
 			},
 		},
@@ -82,6 +89,7 @@ func TestTriggerGetCondition(t *testing.T) {
 				Conditions: []apis.Condition{
 					triggerConditionBroker,
 					triggerConditionSubscribed,
+					triggerConditionDependency,
 				},
 			},
 		},
@@ -124,12 +132,16 @@ func TestTriggerInitializeConditions(t *testing.T) {
 					Type:   TriggerConditionBroker,
 					Status: corev1.ConditionUnknown,
 				}, {
+					Type:   TriggerConditionDependency,
+					Status: corev1.ConditionUnknown,
+				}, {
 					Type:   TriggerConditionReady,
 					Status: corev1.ConditionUnknown,
 				}, {
 					Type:   TriggerConditionSubscribed,
 					Status: corev1.ConditionUnknown,
-				}},
+				},
+				},
 			},
 		},
 	}, {
@@ -148,12 +160,17 @@ func TestTriggerInitializeConditions(t *testing.T) {
 					Type:   TriggerConditionBroker,
 					Status: corev1.ConditionFalse,
 				}, {
-					Type:   TriggerConditionReady,
+					Type:   TriggerConditionDependency,
 					Status: corev1.ConditionUnknown,
-				}, {
-					Type:   TriggerConditionSubscribed,
-					Status: corev1.ConditionUnknown,
-				}},
+				},
+					{
+						Type:   TriggerConditionReady,
+						Status: corev1.ConditionUnknown,
+					}, {
+						Type:   TriggerConditionSubscribed,
+						Status: corev1.ConditionUnknown,
+					},
+				},
 			},
 		},
 	}, {
@@ -172,12 +189,16 @@ func TestTriggerInitializeConditions(t *testing.T) {
 					Type:   TriggerConditionBroker,
 					Status: corev1.ConditionUnknown,
 				}, {
+					Type:   TriggerConditionDependency,
+					Status: corev1.ConditionUnknown,
+				}, {
 					Type:   TriggerConditionReady,
 					Status: corev1.ConditionUnknown,
 				}, {
 					Type:   TriggerConditionSubscribed,
 					Status: corev1.ConditionTrue,
-				}},
+				},
+				},
 			},
 		},
 	}}
@@ -195,48 +216,87 @@ func TestTriggerInitializeConditions(t *testing.T) {
 func TestTriggerIsReady(t *testing.T) {
 	tests := []struct {
 		name                        string
-		markBrokerExists            bool
+		brokerStatus                *BrokerStatus
 		markKubernetesServiceExists bool
 		markVirtualServiceExists    bool
-		markSubscribed              bool
+		subscriptionOwned           bool
+		subscriptionStatus          *messagingv1alpha1.SubscriptionStatus
+		dependencyAnnotationExists  bool
+		dependencyStatusReady       bool
 		wantReady                   bool
 	}{{
 		name:                        "all happy",
-		markBrokerExists:            true,
+		brokerStatus:                TestHelper.ReadyBrokerStatus(),
 		markKubernetesServiceExists: true,
 		markVirtualServiceExists:    true,
-		markSubscribed:              true,
+		subscriptionOwned:           true,
+		subscriptionStatus:          TestHelper.ReadySubscriptionStatus(),
+		dependencyAnnotationExists:  false,
 		wantReady:                   true,
 	}, {
 		name:                        "broker sad",
-		markBrokerExists:            false,
+		brokerStatus:                TestHelper.NotReadyBrokerStatus(),
 		markKubernetesServiceExists: true,
 		markVirtualServiceExists:    true,
-		markSubscribed:              true,
+		subscriptionOwned:           true,
+		subscriptionStatus:          TestHelper.ReadySubscriptionStatus(),
+		dependencyAnnotationExists:  false,
 		wantReady:                   false,
 	}, {
 		name:                        "subscribed sad",
-		markBrokerExists:            true,
+		brokerStatus:                TestHelper.ReadyBrokerStatus(),
 		markKubernetesServiceExists: true,
 		markVirtualServiceExists:    true,
-		markSubscribed:              false,
+		subscriptionOwned:           true,
+		subscriptionStatus:          TestHelper.NotReadySubscriptionStatus(),
+		dependencyAnnotationExists:  false,
 		wantReady:                   false,
 	}, {
-		name:                        "all sad",
-		markBrokerExists:            false,
-		markKubernetesServiceExists: false,
-		markVirtualServiceExists:    false,
-		markSubscribed:              false,
+		name:                        "subscription not owned",
+		brokerStatus:                TestHelper.ReadyBrokerStatus(),
+		markKubernetesServiceExists: true,
+		markVirtualServiceExists:    true,
+		subscriptionOwned:           false,
+		subscriptionStatus:          TestHelper.ReadySubscriptionStatus(),
+		dependencyAnnotationExists:  false,
 		wantReady:                   false,
-	}}
+	}, {
+		name:                        "dependency not ready",
+		brokerStatus:                TestHelper.ReadyBrokerStatus(),
+		markKubernetesServiceExists: true,
+		markVirtualServiceExists:    true,
+		subscriptionOwned:           true,
+		subscriptionStatus:          TestHelper.ReadySubscriptionStatus(),
+		dependencyAnnotationExists:  true,
+		dependencyStatusReady:       false,
+		wantReady:                   false,
+	},
+		{
+			name:                        "all sad",
+			brokerStatus:                TestHelper.NotReadyBrokerStatus(),
+			markKubernetesServiceExists: false,
+			markVirtualServiceExists:    false,
+			subscriptionOwned:           false,
+			subscriptionStatus:          TestHelper.NotReadySubscriptionStatus(),
+			dependencyAnnotationExists:  true,
+			dependencyStatusReady:       false,
+			wantReady:                   false,
+		}}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ts := &TriggerStatus{}
-			if test.markBrokerExists {
-				ts.PropagateBrokerStatus(TestHelper.ReadyBrokerStatus())
+			if test.brokerStatus != nil {
+				ts.PropagateBrokerStatus(test.brokerStatus)
 			}
-			if test.markSubscribed {
-				ts.PropagateSubscriptionStatus(TestHelper.ReadySubscriptionStatus())
+			if !test.subscriptionOwned {
+				ts.MarkSubscriptionNotOwned(&messagingv1alpha1.Subscription{})
+			} else if test.subscriptionStatus != nil {
+				ts.PropagateSubscriptionStatus(test.subscriptionStatus)
+			}
+			if test.dependencyAnnotationExists && !test.dependencyStatusReady {
+				ts.MarkDependencyFailed("Dependency is not ready", "Dependency is not ready")
+			} else {
+				ts.MarkDependencySucceeded()
 			}
 			got := ts.IsReady()
 			if test.wantReady != got {
@@ -285,14 +345,14 @@ func TestTriggerAnnotateUserInfo(t *testing.T) {
 		}, {
 			name:       "update trigger which has no annotations without diff",
 			user:       u1,
-			this:       &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter()}},
-			prev:       &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter()}},
+			this:       &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter}},
+			prev:       &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter}},
 			wantedAnns: map[string]string{},
 		}, {
 			name: "update trigger which has annotations without diff",
 			user: u2,
-			this: withUserAnns(u1, u1, &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter()}}),
-			prev: withUserAnns(u1, u1, &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter()}}),
+			this: withUserAnns(u1, u1, &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter}}),
+			prev: withUserAnns(u1, u1, &Trigger{Spec: TriggerSpec{Broker: defaultBroker, Filter: defaultTriggerFilter}}),
 			wantedAnns: map[string]string{
 				eventing.CreatorAnnotation: u1,
 				eventing.UpdaterAnnotation: u1,

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/knative/eventing/pkg/provisioners/swappable"
+	"knative.dev/eventing/pkg/channel/swappable"
 
 	logtesting "knative.dev/pkg/logging/testing"
 )

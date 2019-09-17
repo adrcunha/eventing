@@ -20,16 +20,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/knative/eventing/pkg/inmemorychannel"
-	"github.com/knative/eventing/pkg/provisioners/swappable"
-	"github.com/knative/eventing/pkg/reconciler"
-	"github.com/knative/eventing/pkg/tracing"
+	"knative.dev/eventing/pkg/channel/swappable"
+	"knative.dev/eventing/pkg/inmemorychannel"
+	"knative.dev/eventing/pkg/reconciler"
+	"knative.dev/eventing/pkg/tracing"
 
 	"go.uber.org/zap"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 
-	inmemorychannelinformer "github.com/knative/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel"
+	inmemorychannelinformer "knative.dev/eventing/pkg/client/injection/informers/messaging/v1alpha1/inmemorychannel"
 )
 
 const (
@@ -40,8 +40,8 @@ const (
 	// itself when creating events.
 	controllerAgentName = "in-memory-channel-dispatcher"
 
-	readTimeout  = 1 * time.Minute
-	writeTimeout = 1 * time.Minute
+	readTimeout  = 15 * time.Minute
+	writeTimeout = 15 * time.Minute
 	port         = 8080
 )
 
@@ -53,10 +53,10 @@ func NewController(
 ) *controller.Impl {
 	base := reconciler.NewBase(ctx, controllerAgentName, cmw)
 
-	// Setup zipkin tracing.
+	// Setup trace publishing.
 	iw := cmw.(*configmap.InformedWatcher)
-	if err := tracing.SetupDynamicZipkinPublishing(base.Logger, iw, "imc-dispatcher"); err != nil {
-		base.Logger.Fatalw("Error setting up Zipkin publishing", zap.Error(err))
+	if err := tracing.SetupDynamicPublishing(base.Logger, iw, "imc-dispatcher"); err != nil {
+		base.Logger.Fatalw("Error setting up trace publishing", zap.Error(err))
 	}
 
 	sh, err := swappable.NewEmptyHandler(base.Logger.Desugar())

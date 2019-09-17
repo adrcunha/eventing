@@ -57,12 +57,6 @@ rules:
     resources:
       - "brokers"
       - "brokers/status"
-      - "channels"
-      - "channels/status"
-      - "clusterchannelprovisioners"
-      - "clusterchannelprovisioners/status"
-      - "subscriptions"
-      - "subscriptions/status"
       - "triggers"
       - "triggers/status"
       - "eventtypes"
@@ -84,6 +78,12 @@ rules:
     resources:
       - "sequences"
       - "sequences/status"
+      - "channels"
+      - "channels/status"
+      - "parallels"
+      - "parallels/status"
+      - "subscriptions"
+      - "subscriptions/status"
     verbs: *everything
 
   # Messaging resources and finalizers we care about.
@@ -91,6 +91,7 @@ rules:
       - "messaging.knative.dev"
     resources:
       - "sequences/finalizers"
+      - "parallels/finalizers"
     verbs:
       - "update"
 

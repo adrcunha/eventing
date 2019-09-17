@@ -20,9 +20,14 @@ import (
 	"context"
 )
 
+const (
+	brokerLabel = "eventing.knative.dev/broker"
+)
+
 func (t *Trigger) SetDefaults(ctx context.Context) {
 	t.Spec.SetDefaults(ctx)
-	setUserInfoAnnotations(t, ctx)
+	setUserInfoAnnotations(ctx, t)
+	setLabels(t)
 }
 
 func (ts *TriggerSpec) SetDefaults(ctx context.Context) {
@@ -33,16 +38,11 @@ func (ts *TriggerSpec) SetDefaults(ctx context.Context) {
 	if ts.Filter == nil {
 		ts.Filter = &TriggerFilter{}
 	}
+}
 
-	// Note that this logic will need to change once there are other filtering options, as it should
-	// only apply if no other filter is applied.
-	if ts.Filter.SourceAndType == nil {
-		ts.Filter.SourceAndType = &TriggerFilterSourceAndType{}
+func setLabels(t *Trigger) {
+	if len(t.Labels) == 0 {
+		t.Labels = map[string]string{}
 	}
-	if ts.Filter.SourceAndType.Type == "" {
-		ts.Filter.SourceAndType.Type = TriggerAnyFilter
-	}
-	if ts.Filter.SourceAndType.Source == "" {
-		ts.Filter.SourceAndType.Source = TriggerAnyFilter
-	}
+	t.Labels[brokerLabel] = t.Spec.Broker
 }
