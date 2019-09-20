@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	clientgotesting "k8s.io/client-go/testing"
 
@@ -37,9 +38,9 @@ import (
 	"knative.dev/eventing/pkg/utils"
 	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
 	"knative.dev/pkg/controller"
-	logtesting "knative.dev/pkg/logging/testing"
 
 	. "knative.dev/eventing/pkg/reconciler/testing"
+	logtesting "knative.dev/pkg/logging/testing"
 	. "knative.dev/pkg/reconciler/testing"
 )
 
@@ -113,9 +114,10 @@ func TestAllCases(t *testing.T) {
 			},
 			Key:     testNS + "/" + sourceName,
 			WantErr: true,
-			//WantEvents: []string{
-			//	Eventf(corev1.EventTypeWarning, "Fail", ""), // TODO: BUGBUGBUG This should make an event.
-			//},
+			WantEvents: []string{
+				Eventf(corev1.EventTypeWarning, "CronJobSourceUpdateStatusFailed",
+					"Failed to update CronJobSource's status: invalid schedule: Expected exactly 5 fields, found 2: invalid schedule"),
+			},
 			WantStatusUpdates: []clientgotesting.UpdateActionImpl{{
 				Object: NewCronJobSource(sourceName, testNS,
 					WithCronJobSourceSpec(sourcesv1alpha1.CronJobSourceSpec{
@@ -462,7 +464,7 @@ func TestAllCases(t *testing.T) {
 		},
 	}
 
-	defer logtesting.ClearAll()
+	logger := logtesting.TestLogger(t)
 	table.Test(t, MakeFactory(func(ctx context.Context, listers *Listers, cmw configmap.Watcher) controller.Reconciler {
 		r := &Reconciler{
 			Base:             reconciler.NewBase(ctx, controllerAgentName, cmw),
@@ -473,10 +475,11 @@ func TestAllCases(t *testing.T) {
 				Image: image,
 			},
 		}
-		r.sinkReconciler = duck.NewSinkReconciler(ctx, func(string) {})
+		r.sinkReconciler = duck.NewSinkReconciler(ctx, func(types.NamespacedName) {})
 		return r
 	},
 		true,
+		logger,
 	))
 }
 
