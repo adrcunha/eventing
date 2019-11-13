@@ -37,6 +37,9 @@ rules:
     verbs:
       - "get"
       - "create"
+      - "update"
+      - "list"
+      - "watch"
 
   # For getting our Deployment so we can decorate with ownerref.
   - apiGroups:
@@ -58,7 +61,8 @@ rules:
       - "admissionregistration.k8s.io"
     resources:
       - "mutatingwebhookconfigurations"
-    verbs: 
+      - "validatingwebhookconfigurations"
+    verbs:
       - "get"
       - "list"
       - "create"

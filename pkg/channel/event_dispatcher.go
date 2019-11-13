@@ -25,10 +25,10 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go"
 	cehttp "github.com/cloudevents/sdk-go/pkg/cloudevents/transport/http"
 	"go.opencensus.io/plugin/ochttp/propagation/b3"
-	"go.opencensus.io/trace"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"knative.dev/eventing/pkg/kncloudevents"
+	"knative.dev/eventing/pkg/tracing"
 	"knative.dev/eventing/pkg/utils"
 )
 
@@ -39,6 +39,17 @@ type Dispatcher interface {
 	//
 	// The destination and reply are URLs.
 	DispatchEvent(ctx context.Context, event cloudevents.Event, destination, reply string) error
+
+	// DispatchEventWithDelivery dispatches an event to a destination over HTTP with delivery options
+	//
+	// The destination and reply are URLs.
+	DispatchEventWithDelivery(ctx context.Context, event cloudevents.Event, destination, reply string, delivery *DeliveryOptions) error
+}
+
+// DeliveryOptions are the delivery options supported by this dispatcher
+type DeliveryOptions struct {
+	// DeadLetterSink is the sink receiving events that could not be dispatched.
+	DeadLetterSink string
 }
 
 // EventDispatcher is the 'real' Dispatcher used everywhere except unit tests.
@@ -72,14 +83,36 @@ func NewEventDispatcher(logger *zap.Logger) *EventDispatcher {
 //
 // The destination and reply are URLs.
 func (d *EventDispatcher) DispatchEvent(ctx context.Context, event cloudevents.Event, destination, reply string) error {
+	return d.DispatchEventWithDelivery(ctx, event, destination, reply, nil)
+}
+
+// DispatchEventWithDelivery dispatches an event to a destination over HTTP with delivery options
+//
+// The destination and reply are URLs.
+func (d *EventDispatcher) DispatchEventWithDelivery(ctx context.Context, event cloudevents.Event, destination, reply string, delivery *DeliveryOptions) error {
 	var err error
 	// Default to replying with the original event. If there is a destination, then replace it
 	// with the response from the call to the destination instead.
 	response := &event
+	var nonerrctx context.Context = ctx
 	if destination != "" {
 		destinationURL := d.resolveURL(destination)
-		ctx, response, err = d.executeRequest(ctx, destinationURL, event)
+
+		nonerrctx, response, err = d.executeRequest(ctx, destinationURL, event)
 		if err != nil {
+
+			if delivery != nil && delivery.DeadLetterSink != "" {
+				deadLetterURL := d.resolveURL(delivery.DeadLetterSink)
+
+				// TODO: decorate event with deadletter attributes
+				_, _, err2 := d.executeRequest(ctx, deadLetterURL, event)
+				if err2 != nil {
+					return fmt.Errorf("unable to complete request to either %s (%v) or %s (%v)", destinationURL, err, deadLetterURL, err2)
+				}
+
+				// Do not send event to reply
+				return nil
+			}
 			return fmt.Errorf("unable to complete request to %s: %v", destinationURL, err)
 		}
 	}
@@ -91,9 +124,19 @@ func (d *EventDispatcher) DispatchEvent(ctx context.Context, event cloudevents.E
 
 	if reply != "" && response != nil {
 		replyURL := d.resolveURL(reply)
-		_, _, err = d.executeRequest(ctx, replyURL, *response)
+		_, _, err = d.executeRequest(nonerrctx, replyURL, *response)
 		if err != nil {
-			return fmt.Errorf("failed to forward reply to %s: %v", replyURL, err)
+			if delivery != nil && delivery.DeadLetterSink != "" {
+				deadLetterURL := d.resolveURL(delivery.DeadLetterSink)
+
+				// TODO: decorate event with deadletter attributes
+				_, _, err2 := d.executeRequest(nonerrctx, deadLetterURL, event)
+				if err2 != nil {
+					return fmt.Errorf("failed to forward reply to %s (%v) and failed to send it to the dead letter sink %s (%v)", replyURL, err, deadLetterURL, err2)
+				}
+			} else {
+				return fmt.Errorf("failed to forward reply to %s: %v", replyURL, err)
+			}
 		}
 	}
 	return nil
@@ -101,42 +144,43 @@ func (d *EventDispatcher) DispatchEvent(ctx context.Context, event cloudevents.E
 
 func (d *EventDispatcher) executeRequest(ctx context.Context, url *url.URL, event cloudevents.Event) (context.Context, *cloudevents.Event, error) {
 	d.logger.Debug("Dispatching event", zap.String("event.id", event.ID()), zap.String("url", url.String()))
+	originalTransportCTX := cloudevents.HTTPTransportContextFrom(ctx)
+	sendingCTX := d.generateSendingContext(originalTransportCTX, url, event)
 
-	tctx := cloudevents.HTTPTransportContextFrom(ctx)
-	sctx := utils.ContextFrom(tctx, url)
-	sctx = addOutGoingTracing(sctx, url)
-
-	rctx, reply, err := d.ceClient.Send(sctx, event)
+	replyCTX, reply, err := d.ceClient.Send(sendingCTX, event)
 	if err != nil {
-		return rctx, nil, err
+		return nil, nil, err
 	}
+	replyCTX, err = generateReplyContext(replyCTX, originalTransportCTX)
+	if err != nil {
+		return nil, nil, err
+	}
+	return replyCTX, reply, nil
+}
+
+func (d *EventDispatcher) generateSendingContext(originalTransportCTX cehttp.TransportContext, url *url.URL, event cloudevents.Event) context.Context {
+	sctx := utils.ContextFrom(originalTransportCTX, url)
+	sctx, err := tracing.AddSpanFromTraceparentAttribute(sctx, url.Path, event)
+	if err != nil {
+		d.logger.Info("Unable to connect outgoing span", zap.Error(err))
+	}
+	return sctx
+}
+
+func generateReplyContext(rctx context.Context, originalTransportCTX cehttp.TransportContext) (context.Context, error) {
+	// rtctx = Reply transport context
 	rtctx := cloudevents.HTTPTransportContextFrom(rctx)
 	if isFailure(rtctx.StatusCode) {
 		// Reject non-successful responses.
-		return rctx, nil, fmt.Errorf("unexpected HTTP response, expected 2xx, got %d", rtctx.StatusCode)
+		return rctx, fmt.Errorf("unexpected HTTP response, expected 2xx, got %d", rtctx.StatusCode)
 	}
 	headers := utils.PassThroughHeaders(rtctx.Header)
-	if correlationID, ok := tctx.Header[correlationIDHeaderName]; ok {
+	if correlationID, ok := originalTransportCTX.Header[correlationIDHeaderName]; ok {
 		headers[correlationIDHeaderName] = correlationID
 	}
 	rtctx.Header = http.Header(headers)
 	rctx = cehttp.WithTransportContext(rctx, rtctx)
-	return rctx, reply, nil
-}
-
-func addOutGoingTracing(ctx context.Context, url *url.URL) context.Context {
-	tctx := cloudevents.HTTPTransportContextFrom(ctx)
-	// Creating a dummy request to leverage propagation.SpanContextFromRequest method.
-	req := &http.Request{
-		Header: tctx.Header,
-	}
-	// TODO use traceparent header. Issue: https://github.com/knative/eventing/issues/1951
-	// Attach the Span context that is currently saved in the request's headers.
-	if sc, ok := propagation.SpanContextFromRequest(req); ok {
-		newCtx, _ := trace.StartSpanWithRemoteParent(ctx, url.Path, sc)
-		return newCtx
-	}
-	return ctx
+	return rctx, nil
 }
 
 // isFailure returns true if the status code is not a successful HTTP status.
@@ -146,9 +190,9 @@ func isFailure(statusCode int) bool {
 }
 
 func (d *EventDispatcher) resolveURL(destination string) *url.URL {
-	if url, err := url.Parse(destination); err == nil && d.supportedSchemes.Has(url.Scheme) {
+	if u, err := url.Parse(destination); err == nil && d.supportedSchemes.Has(u.Scheme) {
 		// Already a URL with a known scheme.
-		return url
+		return u
 	}
 	return &url.URL{
 		Scheme: "http",

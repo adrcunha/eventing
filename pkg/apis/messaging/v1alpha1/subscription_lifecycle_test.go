@@ -17,16 +17,18 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
 	"testing"
 
-	"knative.dev/eventing/pkg/apis/eventing"
 	"knative.dev/pkg/apis"
 
 	"github.com/google/go-cmp/cmp"
-	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
+)
+
+const (
+	reason  = "ReplyFieldsDeprecated"
+	message = "Using depreated fields when specifying subscription.spec.reply. These will be removed in 0.11"
 )
 
 var subscriptionConditionReady = apis.Condition{
@@ -44,6 +46,14 @@ var subscriptionConditionChannelReady = apis.Condition{
 	Status: corev1.ConditionTrue,
 }
 
+var subscriptionConditionDeprecated = apis.Condition{
+	Type:     SubscriptionConditionReplyDeprecated,
+	Status:   corev1.ConditionTrue,
+	Severity: apis.ConditionSeverityWarning,
+	Reason:   reason,
+	Message:  message,
+}
+
 func TestSubscriptionGetCondition(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -53,7 +63,7 @@ func TestSubscriptionGetCondition(t *testing.T) {
 	}{{
 		name: "single condition",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{
 					subscriptionConditionReady,
 				},
@@ -64,7 +74,7 @@ func TestSubscriptionGetCondition(t *testing.T) {
 	}, {
 		name: "multiple conditions",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{
 					subscriptionConditionReady,
 					subscriptionConditionReferencesResolved,
@@ -76,7 +86,7 @@ func TestSubscriptionGetCondition(t *testing.T) {
 	}, {
 		name: "multiple conditions, condition true",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{
 					subscriptionConditionReady,
 					subscriptionConditionChannelReady,
@@ -88,7 +98,7 @@ func TestSubscriptionGetCondition(t *testing.T) {
 	}, {
 		name: "unknown condition",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{
 					subscriptionConditionReady,
 					subscriptionConditionReferencesResolved,
@@ -118,7 +128,7 @@ func TestSubscriptionInitializeConditions(t *testing.T) {
 		name: "empty",
 		ss:   &SubscriptionStatus{},
 		want: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{{
 					Type:   SubscriptionConditionAddedToChannel,
 					Status: corev1.ConditionUnknown,
@@ -137,7 +147,7 @@ func TestSubscriptionInitializeConditions(t *testing.T) {
 	}, {
 		name: "one false",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{{
 					Type:   SubscriptionConditionChannelReady,
 					Status: corev1.ConditionFalse,
@@ -145,7 +155,7 @@ func TestSubscriptionInitializeConditions(t *testing.T) {
 			},
 		},
 		want: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{{
 					Type:   SubscriptionConditionAddedToChannel,
 					Status: corev1.ConditionUnknown,
@@ -164,7 +174,7 @@ func TestSubscriptionInitializeConditions(t *testing.T) {
 	}, {
 		name: "one true",
 		ss: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{{
 					Type:   SubscriptionConditionReferencesResolved,
 					Status: corev1.ConditionTrue,
@@ -172,7 +182,7 @@ func TestSubscriptionInitializeConditions(t *testing.T) {
 			},
 		},
 		want: &SubscriptionStatus{
-			Status: duckv1beta1.Status{
+			Status: duckv1.Status{
 				Conditions: []apis.Condition{{
 					Type:   SubscriptionConditionAddedToChannel,
 					Status: corev1.ConditionUnknown,
@@ -248,12 +258,18 @@ func TestSubscriptionIsReady(t *testing.T) {
 			ss := &SubscriptionStatus{}
 			if test.markResolved {
 				ss.MarkReferencesResolved()
+				if !ss.AreReferencesResolved() {
+					t.Errorf("References marked resolved, but not reflected in AreReferencesResolved")
+				}
 			}
 			if test.markChannelReady {
 				ss.MarkChannelReady()
 			}
 			if test.markAddedToChannel {
 				ss.MarkAddedToChannel()
+				if !ss.IsAddedToChannel() {
+					t.Errorf("Channel added, but not reflected in IsAddedToChannel")
+				}
 			}
 			got := ss.IsReady()
 			if test.wantReady != got {
@@ -263,88 +279,74 @@ func TestSubscriptionIsReady(t *testing.T) {
 	}
 }
 
-func TestSubscriptionAnnotateUserInfo(t *testing.T) {
-	const (
-		u1 = "oveja@knative.dev"
-		u2 = "cabra@knative.dev"
-		u3 = "vaca@knative.dev"
-	)
-
-	withUserAnns := func(creator, updater string, s *Subscription) *Subscription {
-		a := s.GetAnnotations()
-		if a == nil {
-			a = map[string]string{}
-			defer s.SetAnnotations(a)
-		}
-
-		a[eventing.CreatorAnnotation] = creator
-		a[eventing.UpdaterAnnotation] = updater
-
-		return s
-	}
-
+func TestDeprecation(t *testing.T) {
 	tests := []struct {
-		name       string
-		user       string
-		this       *Subscription
-		prev       *Subscription
-		wantedAnns map[string]string
+		name             string
+		ss               *SubscriptionStatus
+		markDeprecation  bool
+		clearDeprecation bool
+		wantDeprecation  bool
 	}{{
-		"create new subscription",
-		u1,
-		&Subscription{},
-		nil,
-		map[string]string{
-			eventing.CreatorAnnotation: u1,
-			eventing.UpdaterAnnotation: u1,
+		name: "no deprecation",
+		ss: &SubscriptionStatus{
+			Status: duckv1.Status{
+				Conditions: []apis.Condition{
+					subscriptionConditionReady,
+				},
+			},
 		},
+		markDeprecation:  false,
+		clearDeprecation: false,
+		wantDeprecation:  false,
 	}, {
-		"update subscription which has no annotations without diff",
-		u1,
-		&Subscription{},
-		&Subscription{},
-		map[string]string{},
-	}, {
-		"update subscription which has annotations without diff",
-		u2,
-		withUserAnns(u1, u1, &Subscription{}),
-		withUserAnns(u1, u1, &Subscription{}),
-		map[string]string{
-			eventing.CreatorAnnotation: u1,
-			eventing.UpdaterAnnotation: u1,
+		name: "add deprecation",
+		ss: &SubscriptionStatus{
+			Status: duckv1.Status{
+				Conditions: []apis.Condition{
+					subscriptionConditionReady,
+				},
+			},
 		},
+		markDeprecation:  true,
+		clearDeprecation: false,
+		wantDeprecation:  true,
 	}, {
-		"update subscription which has no annotations with diff",
-		u2,
-		&Subscription{Spec: SubscriptionSpec{DeprecatedGeneration: 1}},
-		&Subscription{},
-		map[string]string{
-			eventing.UpdaterAnnotation: u2,
-		}}, {
-		"update subscription which has annotations with diff",
-		u3,
-		withUserAnns(u1, u2, &Subscription{Spec: SubscriptionSpec{DeprecatedGeneration: 1}}),
-		withUserAnns(u1, u2, &Subscription{}),
-		map[string]string{
-			eventing.CreatorAnnotation: u1,
-			eventing.UpdaterAnnotation: u3,
+		name: "clear deprecation",
+		ss: &SubscriptionStatus{
+			Status: duckv1.Status{
+				Conditions: []apis.Condition{
+					subscriptionConditionReady,
+					subscriptionConditionDeprecated,
+				},
+			},
 		},
+		markDeprecation:  false,
+		clearDeprecation: true,
+		wantDeprecation:  false,
 	}}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			ctx := apis.WithUserInfo(context.Background(), &authv1.UserInfo{
-				Username: test.user,
-			})
-			if test.prev != nil {
-				ctx = apis.WithinUpdate(ctx, test.prev)
+			if test.markDeprecation {
+				test.ss.MarkReplyDeprecatedRef(reason, message)
 			}
-			test.this.SetDefaults(ctx)
-
-			if got, want := test.this.GetAnnotations(), test.wantedAnns; !cmp.Equal(got, want) {
-				t.Errorf("Annotations = %v, want: %v, diff (-got, +want): %s", got, want, cmp.Diff(got, want))
+			if test.clearDeprecation {
+				test.ss.ClearDeprecated()
+			}
+			var dc *apis.Condition
+			for _, c := range test.ss.Conditions {
+				if c.Type == SubscriptionConditionReplyDeprecated {
+					dc = &c
+				}
+			}
+			if test.wantDeprecation {
+				if dc == nil {
+					t.Errorf("did not get deprecation when wanted it")
+				} else {
+					if dc.Severity != apis.ConditionSeverityWarning {
+						t.Errorf("Wrong severity: want: %s got %s", apis.ConditionSeverityWarning, dc.Severity)
+					}
+				}
 			}
 		})
 	}

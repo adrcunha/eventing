@@ -24,8 +24,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 	"knative.dev/pkg/apis"
+	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
 )
 
 var (
@@ -42,22 +42,33 @@ var (
 			"source": "other_source",
 		},
 	}
-	validSubscriber = &messagingv1alpha1.SubscriberSpec{
+	validSubscriber = &duckv1beta1.Destination{
 		Ref: &corev1.ObjectReference{
 			Name:       "subscriber_test",
 			Kind:       "Service",
 			APIVersion: "serving.knative.dev/v1alpha1",
 		},
 	}
-	invalidSubscriber = &messagingv1alpha1.SubscriberSpec{
+	invalidSubscriber = &duckv1beta1.Destination{
 		Ref: &corev1.ObjectReference{
 			Kind:       "Service",
 			APIVersion: "serving.knative.dev/v1alpha1",
 		},
 	}
+	deprecatedSubscriber = &duckv1beta1.Destination{
+		DeprecatedKind:       "Service",
+		DeprecatedAPIVersion: "serving.knative.dev/v1alpha1",
+		DeprecatedName:       "subscriber_test",
+		DeprecatedNamespace:  "test_ns",
+	}
+	// Dependency annotation
 	validDependencyAnnotation   = "{\"kind\":\"CronJobSource\",\"name\":\"test-cronjob-source\",\"apiVersion\":\"sources.eventing.knative.dev/v1alpha1\"}"
 	invalidDependencyAnnotation = "invalid dependency annotation"
 	dependencyAnnotationPath    = fmt.Sprintf("metadata.annotations[%s]", DependencyAnnotation)
+	// Create default broker annotation
+	validInjectionAnnotation   = "enabled"
+	invalidInjectionAnnotation = "disabled"
+	injectionAnnotationPath    = fmt.Sprintf("metadata.annotations[%s]", InjectionAnnotation)
 )
 
 func TestTriggerValidation(t *testing.T) {
@@ -197,6 +208,42 @@ func TestTriggerValidation(t *testing.T) {
 				Message: "missing field(s)",
 			},
 		},
+		{
+			name: "invalid injection annotation value",
+			t: &Trigger{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "test-ns",
+					Annotations: map[string]string{
+						InjectionAnnotation: invalidInjectionAnnotation,
+					}},
+				Spec: TriggerSpec{
+					Broker:     "default",
+					Filter:     validEmptyFilter,
+					Subscriber: validSubscriber,
+				}},
+			want: &apis.FieldError{
+				Paths:   []string{injectionAnnotationPath},
+				Message: "The provided injection annotation value can only be \"enabled\", not \"disabled\"",
+			},
+		},
+		{
+			name: "valid injection annotation value, non-default broker specified",
+			t: &Trigger{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "test-ns",
+					Annotations: map[string]string{
+						InjectionAnnotation: validInjectionAnnotation,
+					}},
+				Spec: TriggerSpec{
+					Broker:     "test-broker",
+					Filter:     validEmptyFilter,
+					Subscriber: validSubscriber,
+				}},
+			want: &apis.FieldError{
+				Paths:   []string{injectionAnnotationPath},
+				Message: "The provided injection annotation is only used for default broker, but non-default broker specified here: \"test-broker\"",
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -326,41 +373,57 @@ func TestTriggerSpecValidation(t *testing.T) {
 			return fe
 		}(),
 	}, {
-		name: "missing broker",
+		name: "deprecated subscriber",
 		ts: &TriggerSpec{
-			Broker:     "",
+			Broker:     "test_broker",
 			Filter:     validSourceAndTypeFilter,
-			Subscriber: validSubscriber,
+			Subscriber: deprecatedSubscriber,
 		},
 		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("broker")
-			return fe
+			var errs *apis.FieldError
+			errs = errs.Also(apis.ErrInvalidValue("apiVersion is not allowed here, it's a deprecated value", "apiVersion"))
+			errs = errs.Also(apis.ErrInvalidValue("kind is not allowed here, it's a deprecated value", "kind"))
+			errs = errs.Also(apis.ErrInvalidValue("name is not allowed here, it's a deprecated value", "name"))
+			errs = errs.Also(apis.ErrInvalidValue("namespace is not allowed here, it's a deprecated value", "namespace"))
+			return errs.ViaField("subscriber")
 		}(),
-	}, {
-		name: "valid empty filter",
-		ts: &TriggerSpec{
-			Broker:     "test_broker",
-			Filter:     validEmptyFilter,
-			Subscriber: validSubscriber,
-		},
-		want: &apis.FieldError{},
-	}, {
-		name: "valid SourceAndType filter",
-		ts: &TriggerSpec{
-			Broker:     "test_broker",
-			Filter:     validSourceAndTypeFilter,
-			Subscriber: validSubscriber,
-		},
-		want: &apis.FieldError{},
-	}, {
-		name: "valid Attributes filter",
-		ts: &TriggerSpec{
-			Broker:     "test_broker",
-			Filter:     validAttributesFilter,
-			Subscriber: validSubscriber,
-		},
-		want: &apis.FieldError{},
-	}}
+	},
+		{
+			name: "missing broker",
+			ts: &TriggerSpec{
+				Broker:     "",
+				Filter:     validSourceAndTypeFilter,
+				Subscriber: validSubscriber,
+			},
+			want: func() *apis.FieldError {
+				fe := apis.ErrMissingField("broker")
+				return fe
+			}(),
+		}, {
+			name: "valid empty filter",
+			ts: &TriggerSpec{
+				Broker:     "test_broker",
+				Filter:     validEmptyFilter,
+				Subscriber: validSubscriber,
+			},
+			want: &apis.FieldError{},
+		}, {
+			name: "valid SourceAndType filter",
+			ts: &TriggerSpec{
+				Broker:     "test_broker",
+				Filter:     validSourceAndTypeFilter,
+				Subscriber: validSubscriber,
+			},
+			want: &apis.FieldError{},
+		}, {
+			name: "valid Attributes filter",
+			ts: &TriggerSpec{
+				Broker:     "test_broker",
+				Filter:     validAttributesFilter,
+				Subscriber: validSubscriber,
+			},
+			want: &apis.FieldError{},
+		}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

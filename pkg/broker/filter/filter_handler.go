@@ -26,15 +26,16 @@ import (
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go"
-	cehttp "github.com/cloudevents/sdk-go/pkg/cloudevents/transport/http"
+	"go.opencensus.io/trace"
 	"go.uber.org/zap"
 	eventingv1alpha1 "knative.dev/eventing/pkg/apis/eventing/v1alpha1"
 	"knative.dev/eventing/pkg/broker"
 	eventinglisters "knative.dev/eventing/pkg/client/listers/eventing/v1alpha1"
+	"knative.dev/eventing/pkg/kncloudevents"
 	"knative.dev/eventing/pkg/logging"
 	"knative.dev/eventing/pkg/reconciler/trigger/path"
 	"knative.dev/eventing/pkg/utils"
-	"knative.dev/pkg/tracing"
+	pkgtracing "knative.dev/pkg/tracing"
 )
 
 const (
@@ -46,6 +47,15 @@ const (
 
 	// readyz is the HTTP path that will be used for readiness checks.
 	readyz = "/readyz"
+
+	// TODO make these constants configurable (either as env variables, config map, or part of broker spec).
+	//  Issue: https://github.com/knative/eventing/issues/1777
+	// Constants for the underlying HTTP Client transport. These would enable better connection reuse.
+	// Set them on a 10:1 ratio, but this would actually depend on the Triggers' subscribers and the workload itself.
+	// These are magic numbers, partly set based on empirical evidence running performance workloads, and partly
+	// based on what serving is doing. See https://github.com/knative/serving/blob/master/pkg/network/transports.go.
+	defaultMaxIdleConnections        = 1000
+	defaultMaxIdleConnectionsPerHost = 100
 )
 
 // Handler parses Cloud Events, determines if they pass a filter, and sends them to a subscriber.
@@ -63,12 +73,16 @@ type FilterResult string
 // NewHandler creates a new Handler and its associated MessageReceiver. The caller is responsible for
 // Start()ing the returned Handler.
 func NewHandler(logger *zap.Logger, triggerLister eventinglisters.TriggerNamespaceLister, reporter StatsReporter) (*Handler, error) {
-	httpTransport, err := cloudevents.NewHTTPTransport(cloudevents.WithBinaryEncoding(), cehttp.WithMiddleware(tracing.HTTPSpanIgnoringPaths(readyz)))
+	httpTransport, err := cloudevents.NewHTTPTransport(cloudevents.WithBinaryEncoding(), cloudevents.WithMiddleware(pkgtracing.HTTPSpanIgnoringPaths(readyz)))
 	if err != nil {
 		return nil, err
 	}
 
-	ceClient, err := cloudevents.NewClient(httpTransport, cloudevents.WithTimeNow(), cloudevents.WithUUIDs())
+	connectionArgs := kncloudevents.ConnectionArgs{
+		MaxIdleConns:        defaultMaxIdleConnections,
+		MaxIdleConnsPerHost: defaultMaxIdleConnectionsPerHost,
+	}
+	ceClient, err := kncloudevents.NewDefaultClientGivenHttpTransport(httpTransport, connectionArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -206,11 +220,10 @@ func (r *Handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportC
 	}
 
 	reportArgs := &ReportArgs{
-		ns:           t.Namespace,
-		trigger:      t.Name,
-		broker:       t.Spec.Broker,
-		filterType:   triggerFilterAttribute(t.Spec.Filter, "type"),
-		filterSource: triggerFilterAttribute(t.Spec.Filter, "source"),
+		ns:         t.Namespace,
+		trigger:    t.Name,
+		broker:     t.Spec.Broker,
+		filterType: triggerFilterAttribute(t.Spec.Filter, "type"),
 	}
 
 	subscriberURIString := t.Status.SubscriberURI
@@ -250,8 +263,12 @@ func (r *Handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportC
 		}
 	}
 
-	start := time.Now()
 	sendingCTX := utils.ContextFrom(tctx, subscriberURI)
+	// Due to an issue in utils.ContextFrom, we don't retain the original trace context from ctx, so
+	// bring it in manually.
+	sendingCTX = trace.NewContext(sendingCTX, trace.FromContext(ctx))
+
+	start := time.Now()
 	rctx, replyEvent, err := r.ceClient.Send(sendingCTX, *event)
 	rtctx := cloudevents.HTTPTransportContextFrom(rctx)
 	// Record the dispatch time.
@@ -299,16 +316,17 @@ func (r *Handler) filterEventByAttributes(ctx context.Context, attrs map[string]
 	// exactly the same as the attributes defined in the current version of the
 	// CloudEvents spec.
 	ce := map[string]interface{}{
-		"specversion":         event.SpecVersion(),
-		"type":                event.Type(),
-		"source":              event.Source(),
-		"subject":             event.Subject(),
-		"id":                  event.ID(),
-		"time":                event.Time().String(),
-		"schemaurl":           event.SchemaURL(),
-		"datacontenttype":     event.DataContentType(),
-		"datamediatype":       event.DataMediaType(),
-		"datacontentencoding": event.DataContentEncoding(),
+		"specversion":     event.SpecVersion(),
+		"type":            event.Type(),
+		"source":          event.Source(),
+		"subject":         event.Subject(),
+		"id":              event.ID(),
+		"time":            event.Time().String(),
+		"schemaurl":       event.DataSchema(),
+		"datacontenttype": event.DataContentType(),
+		"datamediatype":   event.DataMediaType(),
+		// TODO: use data_base64 when SDK supports it.
+		"datacontentencoding": event.DeprecatedDataContentEncoding(),
 	}
 	ext := event.Extensions()
 	if ext != nil {

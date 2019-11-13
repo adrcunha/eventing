@@ -28,10 +28,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	clientgotesting "k8s.io/client-go/testing"
+	eventingduckv1alpha1 "knative.dev/eventing/pkg/apis/duck/v1alpha1"
 	"knative.dev/eventing/pkg/apis/eventing/v1alpha1"
+	"knative.dev/eventing/pkg/duck"
 	"knative.dev/eventing/pkg/reconciler"
 	"knative.dev/eventing/pkg/reconciler/broker/resources"
 	. "knative.dev/eventing/pkg/reconciler/testing"
@@ -809,7 +812,7 @@ func TestReconcile(t *testing.T) {
 			filterServiceAccountName:  filterSA,
 			ingressImage:              ingressImage,
 			ingressServiceAccountName: ingressSA,
-			resourceTracker:           &MockResourceTracker{},
+			channelableTracker:        duck.NewListableTracker(ctx, &eventingduckv1alpha1.Channelable{}, func(types.NamespacedName) {}, 0),
 		}
 	},
 		false,
@@ -877,12 +880,24 @@ func envVars(containerName string) []corev1.EnvVar {
 				},
 			},
 			{
+				Name: "POD_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.name",
+					},
+				},
+			},
+			{
+				Name:  "CONTAINER_NAME",
+				Value: filterContainerName,
+			},
+			{
 				Name:  "BROKER",
 				Value: brokerName,
 			},
 			{
 				Name:  "METRICS_DOMAIN",
-				Value: "knative.dev/eventing",
+				Value: "knative.dev/internal/eventing",
 			},
 		}
 	case ingressContainerName:
@@ -900,6 +915,18 @@ func envVars(containerName string) []corev1.EnvVar {
 				},
 			},
 			{
+				Name: "POD_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.name",
+					},
+				},
+			},
+			{
+				Name:  "CONTAINER_NAME",
+				Value: ingressContainerName,
+			},
+			{
 				Name:  "FILTER",
 				Value: "",
 			},
@@ -913,7 +940,7 @@ func envVars(containerName string) []corev1.EnvVar {
 			},
 			{
 				Name:  "METRICS_DOMAIN",
-				Value: "knative.dev/eventing",
+				Value: "knative.dev/internal/eventing",
 			},
 		}
 	}

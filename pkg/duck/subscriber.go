@@ -18,7 +18,6 @@ package duck
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 
@@ -26,16 +25,12 @@ import (
 
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	duckapis "knative.dev/pkg/apis"
 	"knative.dev/pkg/apis/duck"
-	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
 
-	"knative.dev/eventing/pkg/apis/messaging/v1alpha1"
 	"knative.dev/eventing/pkg/logging"
-	"knative.dev/eventing/pkg/reconciler/names"
 )
 
 // DomainToURL converts a domain into an HTTP URL.
@@ -67,61 +62,4 @@ func ObjectReference(ctx context.Context, dynamicClient dynamic.Interface, names
 	}
 
 	return resourceClient.Get(ref.Name, metav1.GetOptions{})
-}
-
-type Track func(corev1.ObjectReference) error
-
-// SubscriberSpec resolves the Spec.Call object. If it's an ObjectReference, it will resolve the
-// object and treat it as an Addressable. If it's a DNSName, then it's used as is.
-// TODO: Once Service Routes, etc. support Callable, use that.
-func SubscriberSpec(ctx context.Context, dynamicClient dynamic.Interface, namespace string, s *v1alpha1.SubscriberSpec, track Track) (string, error) {
-	if isNilOrEmptySubscriber(s) {
-		return "", nil
-	}
-	if s.URI != nil && *s.URI != "" {
-		return *s.URI, nil
-	}
-	if s.DeprecatedDNSName != nil && *s.DeprecatedDNSName != "" {
-		return *s.DeprecatedDNSName, nil
-	}
-
-	obj, err := ObjectReference(ctx, dynamicClient, namespace, s.Ref)
-	if err != nil {
-		logging.FromContext(ctx).Warn("Failed to fetch SubscriberSpec target",
-			zap.Error(err),
-			zap.Any("subscriberSpec.Ref", s.Ref))
-		return "", err
-	}
-
-	if err = track(*s.Ref); err != nil {
-		return "", fmt.Errorf("unable to track the reference: %v", err)
-	}
-
-	// K8s services are special cased. They can be called, even though they do not satisfy the
-	// Callable interface.
-	if s.Ref != nil && s.Ref.APIVersion == "v1" && s.Ref.Kind == "Service" {
-		// This Service must exist because ObjectReference did not return an error.
-		return DomainToURL(names.ServiceHostName(s.Ref.Name, namespace)), nil
-	}
-
-	t := duckv1alpha1.AddressableType{}
-	if err = duck.FromUnstructured(obj, &t); err == nil {
-		if t.Status.Address != nil {
-			url := t.Status.Address.GetURL()
-			return url.String(), nil
-		}
-	}
-
-	legacy := duckv1alpha1.LegacyTarget{}
-	if err = duck.FromUnstructured(obj, &legacy); err == nil {
-		if legacy.Status.DomainInternal != "" {
-			return DomainToURL(legacy.Status.DomainInternal), nil
-		}
-	}
-
-	return "", errors.New("status does not contain address")
-}
-
-func isNilOrEmptySubscriber(sub *v1alpha1.SubscriberSpec) bool {
-	return sub == nil || equality.Semantic.DeepEqual(sub, &v1alpha1.SubscriberSpec{})
 }

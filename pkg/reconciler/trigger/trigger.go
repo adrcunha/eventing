@@ -28,9 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"knative.dev/eventing/pkg/apis/eventing/v1alpha1"
@@ -44,9 +42,10 @@ import (
 	"knative.dev/eventing/pkg/reconciler/names"
 	"knative.dev/eventing/pkg/reconciler/trigger/path"
 	"knative.dev/eventing/pkg/reconciler/trigger/resources"
-	apisduck "knative.dev/pkg/apis/duck"
 	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
 	"knative.dev/pkg/controller"
+	"knative.dev/pkg/resolver"
+	"knative.dev/pkg/tracker"
 )
 
 const (
@@ -66,12 +65,18 @@ const (
 type Reconciler struct {
 	*reconciler.Base
 
-	triggerLister            listers.TriggerLister
-	subscriptionLister       messaginglisters.SubscriptionLister
-	brokerLister             listers.BrokerLister
-	serviceLister            corev1listers.ServiceLister
-	resourceTracker          duck.ResourceTracker
-	kresourceInformerFactory apisduck.InformerFactory
+	triggerLister      listers.TriggerLister
+	subscriptionLister messaginglisters.SubscriptionLister
+	brokerLister       listers.BrokerLister
+	serviceLister      corev1listers.ServiceLister
+	namespaceLister    corev1listers.NamespaceLister
+	// Regular tracker to track static resources. In particular, it tracks Broker's changes.
+	tracker tracker.Interface
+	// Dynamic tracker to track KResources. In particular, it tracks the dependency between Triggers and Sources.
+	kresourceTracker duck.ListableTracker
+	// Dynamic tracker to track AddressableTypes. In particular, it tracks Trigger subscribers.
+	addressableTracker duck.ListableTracker
+	uriResolver        *resolver.URIResolver
 }
 
 var brokerGVK = v1alpha1.SchemeGroupVersion.WithKind("Broker")
@@ -142,16 +147,15 @@ func (r *Reconciler) reconcile(ctx context.Context, t *v1alpha1.Trigger) error {
 		// Everything is cleaned up by the garbage collector.
 		return nil
 	}
-	track := r.resourceTracker.TrackInNamespace(t)
-
-	// Tell resourceTracker to reconcile this Trigger whenever the Broker changes.
+	// Tell tracker to reconcile this Trigger whenever the Broker changes.
 	brokerObjRef := corev1.ObjectReference{
 		Kind:       brokerGVK.Kind,
 		APIVersion: brokerGVK.GroupVersion().String(),
 		Name:       t.Spec.Broker,
 		Namespace:  t.Namespace,
 	}
-	if err := track(brokerObjRef); err != nil {
+
+	if err := r.tracker.Track(brokerObjRef, t); err != nil {
 		logging.FromContext(ctx).Error("Unable to track changes to Broker", zap.Error(err))
 		return err
 	}
@@ -161,6 +165,12 @@ func (r *Reconciler) reconcile(ctx context.Context, t *v1alpha1.Trigger) error {
 		logging.FromContext(ctx).Error("Unable to get the Broker", zap.Error(err))
 		if apierrs.IsNotFound(err) {
 			t.Status.MarkBrokerFailed("DoesNotExist", "Broker does not exist")
+			_, needDefaultBroker := t.GetAnnotations()[v1alpha1.InjectionAnnotation]
+			if t.Spec.Broker == "default" && needDefaultBroker {
+				if e := r.labelNamespace(ctx, t); e != nil {
+					logging.FromContext(ctx).Error("Unable to label the namespace", zap.Error(e))
+				}
+			}
 		} else {
 			t.Status.MarkBrokerFailed("BrokerGetFailed", "Failed to get broker")
 		}
@@ -195,12 +205,27 @@ func (r *Reconciler) reconcile(ctx context.Context, t *v1alpha1.Trigger) error {
 		return err
 	}
 
-	subscriberURI, err := duck.SubscriberSpec(ctx, r.DynamicClientSet, t.Namespace, t.Spec.Subscriber, track)
+	if t.Spec.Subscriber == nil {
+		return errors.New("subscriber cannot be nil")
+	}
+
+	if t.Spec.Subscriber.Ref != nil {
+		// To call URIFromDestination(dest apisv1alpha1.Destination, parent interface{}), dest.Ref must have a Namespace
+		// We will use the Namespace of Trigger as the Namespace of dest.Ref
+		t.Spec.Subscriber.Ref.Namespace = t.GetNamespace()
+		// Since Trigger never allowed ref fields at the subscriber level and
+		// validates that they are absent, we can ignore them here.
+	}
+
+	subscriberURI, err := r.uriResolver.URIFromDestination(*t.Spec.Subscriber, t)
 	if err != nil {
 		logging.FromContext(ctx).Error("Unable to get the Subscriber's URI", zap.Error(err))
+		t.Status.MarkSubscriberResolvedFailed("Unable to get the Subscriber's URI", "%v", err)
+		t.Status.SubscriberURI = ""
 		return err
 	}
 	t.Status.SubscriberURI = subscriberURI
+	t.Status.MarkSubscriberResolvedSucceeded()
 
 	sub, err := r.subscribeToBrokerChannel(ctx, t, brokerTrigger, brokerIngress, filterSvc)
 	if err != nil {
@@ -210,27 +235,27 @@ func (r *Reconciler) reconcile(ctx context.Context, t *v1alpha1.Trigger) error {
 	}
 	t.Status.PropagateSubscriptionStatus(&sub.Status)
 
-	if err := r.checkDependencyAnnotation(t, track, ctx); err != nil {
+	if err := r.checkDependencyAnnotation(ctx, t); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (r *Reconciler) checkDependencyAnnotation(t *v1alpha1.Trigger, track func(corev1.ObjectReference) error, ctx context.Context) error {
+func (r *Reconciler) checkDependencyAnnotation(ctx context.Context, t *v1alpha1.Trigger) error {
 	if dependencyAnnotation, ok := t.GetAnnotations()[v1alpha1.DependencyAnnotation]; ok {
 		dependencyObjRef, err := v1alpha1.GetObjRefFromDependencyAnnotation(dependencyAnnotation)
 		if err != nil {
 			t.Status.MarkDependencyFailed("ReferenceError", "Unable to unmarshal objectReference from dependency annotation of trigger: %v", err)
 			return fmt.Errorf("getting object ref from dependency annotation %q: %v", dependencyAnnotation, err)
 		}
-		//trigger and its dependency importer are in the same namespace, we already did the validation when we in the trigger webhook
-		if err := track(dependencyObjRef); err != nil {
+		trackKResource := r.kresourceTracker.TrackInNamespace(t)
+		// Trigger and its dependent source are in the same namespace, we already did the validation in the webhook.
+		if err := trackKResource(dependencyObjRef); err != nil {
 			return fmt.Errorf("tracking dependency: %v", err)
 		}
-		if err := r.propagateDependencyReadiness(dependencyObjRef, ctx, t); err != nil {
+		if err := r.propagateDependencyReadiness(ctx, t, dependencyObjRef); err != nil {
 			return fmt.Errorf("propagating dependency readiness: %v", err)
-
 		}
 	} else {
 		t.Status.MarkDependencySucceeded()
@@ -238,17 +263,11 @@ func (r *Reconciler) checkDependencyAnnotation(t *v1alpha1.Trigger, track func(c
 	return nil
 }
 
-func (r *Reconciler) propagateDependencyReadiness(dependencyObjRef corev1.ObjectReference, ctx context.Context, t *v1alpha1.Trigger) error {
-	gvk := schema.GroupVersionKind{
-		Group:   dependencyObjRef.GroupVersionKind().Group,
-		Version: dependencyObjRef.GroupVersionKind().Version,
-		Kind:    dependencyObjRef.Kind,
-	}
-	gvr, _ := meta.UnsafeGuessKindToResource(gvk)
-	_, lister, err := r.kresourceInformerFactory.Get(gvr)
+func (r *Reconciler) propagateDependencyReadiness(ctx context.Context, t *v1alpha1.Trigger, dependencyObjRef corev1.ObjectReference) error {
+	lister, err := r.kresourceTracker.ListerFor(dependencyObjRef)
 	if err != nil {
-		t.Status.MarkDependencyUnknown("FailedToListResource", "Failed to list resource: %v", err)
-		return fmt.Errorf("creating lister: %v", err)
+		t.Status.MarkDependencyUnknown("ListerDoesNotExist", "Failed to retrieve lister: %v", err)
+		return fmt.Errorf("retrieving lister: %v", err)
 	}
 	dependencyObj, err := lister.ByNamespace(t.GetNamespace()).Get(dependencyObjRef.Name)
 	if err != nil {
@@ -301,6 +320,25 @@ func (r *Reconciler) updateStatus(ctx context.Context, desired *v1alpha1.Trigger
 	}
 
 	return trig, err
+}
+
+// labelNamespace will label namespace with knative-eventing-injection=enabled
+func (r *Reconciler) labelNamespace(ctx context.Context, t *v1alpha1.Trigger) error {
+	current, err := r.namespaceLister.Get(t.Namespace)
+	if err != nil {
+		t.Status.MarkBrokerFailed("NamespaceGetFailed", "Failed to get namespace resource to enable knative-eventing-injection")
+		return err
+	}
+	current = current.DeepCopy()
+	if current.Labels == nil {
+		current.Labels = map[string]string{}
+	}
+	current.Labels["knative-eventing-injection"] = "enabled"
+	if _, err = r.KubeClientSet.CoreV1().Namespaces().Update(current); err != nil {
+		t.Status.MarkBrokerFailed("NamespaceUpdateFailed", "Failed to label the namespace resource with knative-eventing-injection")
+		return err
+	}
+	return nil
 }
 
 // getBrokerFilterService returns the K8s service for trigger 't' if exists,
