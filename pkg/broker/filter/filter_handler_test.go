@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	cloudevents "github.com/cloudevents/sdk-go"
+	cepkg "github.com/cloudevents/sdk-go/pkg/cloudevents"
 	cehttp "github.com/cloudevents/sdk-go/pkg/cloudevents/transport/http"
 	"github.com/google/go-cmp/cmp"
 	"go.uber.org/zap"
@@ -41,6 +42,7 @@ import (
 	"knative.dev/eventing/pkg/client/clientset/versioned/fake"
 	"knative.dev/eventing/pkg/client/listers/eventing/v1alpha1"
 	"knative.dev/eventing/pkg/utils"
+	"knative.dev/pkg/apis"
 )
 
 const (
@@ -52,7 +54,8 @@ const (
 	extensionName  = `my-extension`
 	extensionValue = `my-extension-value`
 
-	toBeReplaced = "toBeReplaced"
+	// Because it's a URL we're comparing to, without protocol it looks like this.
+	toBeReplaced = "//toBeReplaced"
 )
 
 var (
@@ -71,6 +74,7 @@ func TestReceiver(t *testing.T) {
 		tctx                        *cloudevents.HTTPTransportContext
 		event                       *cloudevents.Event
 		requestFails                bool
+		failureStatus               int
 		returnedEvent               *cloudevents.Event
 		expectNewToFail             bool
 		expectedErr                 bool
@@ -128,13 +132,6 @@ func TestReceiver(t *testing.T) {
 		"Trigger doesn't have SubscriberURI": {
 			triggers: []*eventingv1alpha1.Trigger{
 				makeTriggerWithoutSubscriberURI(),
-			},
-			expectedErr:        true,
-			expectedEventCount: true,
-		},
-		"Trigger with bad SubscriberURI": {
-			triggers: []*eventingv1alpha1.Trigger{
-				makeTriggerWithBadSubscriberURI(),
 			},
 			expectedErr:        true,
 			expectedEventCount: true,
@@ -260,6 +257,24 @@ func TestReceiver(t *testing.T) {
 			expectedEventDispatchTime: true,
 			returnedEvent:             makeDifferentEvent(),
 		},
+		"Error From Trigger": {
+			triggers: []*eventingv1alpha1.Trigger{
+				makeTrigger(makeTriggerFilterWithAttributes("", "")),
+			},
+			tctx: &cloudevents.HTTPTransportContext{
+				Method:     "POST",
+				Host:       host,
+				URI:        validPath,
+				StatusCode: http.StatusTooManyRequests,
+			},
+			requestFails:              true,
+			failureStatus:             http.StatusTooManyRequests,
+			expectedDispatch:          true,
+			expectedEventCount:        true,
+			expectedEventDispatchTime: true,
+			expectedErr:               true,
+			expectedStatus:            http.StatusTooManyRequests,
+		},
 		"Returned Cloud Event with custom headers": {
 			triggers: []*eventingv1alpha1.Trigger{
 				makeTrigger(makeTriggerFilterWithDeprecatedSourceAndType("", "")),
@@ -300,6 +315,7 @@ func TestReceiver(t *testing.T) {
 
 			fh := fakeHandler{
 				failRequest:   tc.requestFails,
+				failStatus:    tc.failureStatus,
 				returnedEvent: tc.returnedEvent,
 				headers:       tc.expectedHeaders,
 				t:             t,
@@ -310,8 +326,13 @@ func TestReceiver(t *testing.T) {
 			// Replace the SubscriberURI to point at our fake server.
 			correctURI := make([]runtime.Object, 0, len(tc.triggers))
 			for _, trig := range tc.triggers {
-				if trig.Status.SubscriberURI == toBeReplaced {
-					trig.Status.SubscriberURI = s.URL
+				if trig.Status.SubscriberURI != nil && trig.Status.SubscriberURI.String() == toBeReplaced {
+
+					url, err := apis.ParseURL(s.URL)
+					if err != nil {
+						t.Fatalf("Failed to parse URL %q : %s", s.URL, err)
+					}
+					trig.Status.SubscriberURI = url
 				}
 				correctURI = append(correctURI, trig)
 			}
@@ -366,7 +387,11 @@ func TestReceiver(t *testing.T) {
 			if tc.expectedEventProcessingTime != reporter.eventProcessingTimeReported {
 				t.Errorf("Incorrect event processing time reported metric. Expected %v, Actual %v", tc.expectedEventProcessingTime, reporter.eventProcessingTimeReported)
 			}
-
+			if tc.returnedEvent != nil {
+				if tc.returnedEvent.SpecVersion() != cepkg.CloudEventsVersionV1 {
+					t.Errorf("Incorrect event processing time reported metric. Expected %v, Actual %v", tc.expectedEventProcessingTime, reporter.eventProcessingTimeReported)
+				}
+			}
 			// Compare the returned event.
 			if tc.returnedEvent == nil {
 				if resp.Event != nil {
@@ -379,7 +404,7 @@ func TestReceiver(t *testing.T) {
 
 			// The TTL will be added again.
 			expectedResponseEvent := addTTLToEvent(*tc.returnedEvent)
-			if diff := cmp.Diff(expectedResponseEvent.Context.AsV03(), resp.Event.Context.AsV03()); diff != "" {
+			if diff := cmp.Diff(expectedResponseEvent.Context.AsV1(), resp.Event.Context.AsV1()); diff != "" {
 				t.Errorf("Incorrect response event context (-want +got): %s", diff)
 			}
 			if diff := cmp.Diff(expectedResponseEvent.Data, resp.Event.Data); diff != "" {
@@ -412,6 +437,7 @@ func (r *mockReporter) ReportEventProcessingTime(args *ReportArgs, d time.Durati
 
 type fakeHandler struct {
 	failRequest     bool
+	failStatus      int
 	requestReceived bool
 	headers         http.Header
 	returnedEvent   *cloudevents.Event
@@ -422,7 +448,7 @@ func (h *fakeHandler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	h.requestReceived = true
 
 	for n, v := range h.headers {
-		if strings.Contains(strings.ToLower(n), strings.ToLower(broker.V03TTLAttribute)) {
+		if strings.Contains(strings.ToLower(n), strings.ToLower(broker.TTLAttribute)) {
 			h.t.Errorf("Broker TTL should not be seen by the subscriber: %s", n)
 		}
 		if diff := cmp.Diff(v, req.Header[n]); diff != "" {
@@ -431,7 +457,11 @@ func (h *fakeHandler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 
 	if h.failRequest {
-		resp.WriteHeader(http.StatusBadRequest)
+		if h.failStatus != 0 {
+			resp.WriteHeader(h.failStatus)
+		} else {
+			resp.WriteHeader(http.StatusBadRequest)
+		}
 		return
 	}
 	if h.returnedEvent == nil {
@@ -439,7 +469,7 @@ func (h *fakeHandler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	c := &cehttp.CodecV03{}
+	c := &cehttp.CodecV1{}
 	m, err := c.Encode(context.Background(), *h.returnedEvent)
 	if err != nil {
 		h.t.Fatalf("Could not encode message: %v", err)
@@ -520,7 +550,7 @@ func makeTrigger(filter *eventingv1alpha1.TriggerFilter) *eventingv1alpha1.Trigg
 			Filter: filter,
 		},
 		Status: eventingv1alpha1.TriggerStatus{
-			SubscriberURI: "toBeReplaced",
+			SubscriberURI: &apis.URL{Host: "toBeReplaced"},
 		},
 	}
 }
@@ -537,14 +567,6 @@ func makeTriggerWithoutSubscriberURI() *eventingv1alpha1.Trigger {
 	return t
 }
 
-func makeTriggerWithBadSubscriberURI() *eventingv1alpha1.Trigger {
-	t := makeTrigger(makeTriggerFilterWithDeprecatedSourceAndType("", ""))
-	// This should fail url.Parse(). It was taken from the unit tests for url.Parse(), it violates
-	// rfc3986 3.2.3, namely that the port must be digits.
-	t.Status.SubscriberURI = "http://[::1]:namedport"
-	return t
-}
-
 func makeEventWithoutTTL() *cloudevents.Event {
 	return &cloudevents.Event{
 		Context: cloudevents.EventContextV02{
@@ -555,7 +577,7 @@ func makeEventWithoutTTL() *cloudevents.Event {
 				},
 			},
 			ContentType: cloudevents.StringOfApplicationJSON(),
-		}.AsV03(),
+		}.AsV1(),
 	}
 }
 
@@ -566,7 +588,7 @@ func makeEvent() *cloudevents.Event {
 }
 
 func addTTLToEvent(e cloudevents.Event) cloudevents.Event {
-	e.Context, _ = broker.SetTTL(e.Context, 1)
+	broker.SetTTL(e.Context, 1)
 	return e
 }
 
@@ -580,7 +602,7 @@ func makeDifferentEvent() *cloudevents.Event {
 				},
 			},
 			ContentType: cloudevents.StringOfApplicationJSON(),
-		}.AsV03(),
+		}.AsV1(),
 	}
 }
 
@@ -597,7 +619,7 @@ func makeEventWithExtension(extName, extValue string) *cloudevents.Event {
 			Extensions: map[string]interface{}{
 				extName: extValue,
 			},
-		}.AsV03(),
+		}.AsV1(),
 	}
 	e := addTTLToEvent(*noTTL)
 	return &e

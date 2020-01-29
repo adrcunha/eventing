@@ -25,7 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/apis"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 )
 
 var (
@@ -42,24 +42,28 @@ var (
 			"source": "other_source",
 		},
 	}
-	validSubscriber = &duckv1beta1.Destination{
+	invalidFilterHasBoth = &TriggerFilter{
+		DeprecatedSourceAndType: &TriggerFilterSourceAndType{
+			Type:   "other_type",
+			Source: "other_source",
+		},
+		Attributes: &TriggerFilterAttributes{
+			"type":   "other_type",
+			"source": "other_source",
+		},
+	}
+	validSubscriber = duckv1.Destination{
 		Ref: &corev1.ObjectReference{
 			Name:       "subscriber_test",
 			Kind:       "Service",
 			APIVersion: "serving.knative.dev/v1alpha1",
 		},
 	}
-	invalidSubscriber = &duckv1beta1.Destination{
+	invalidSubscriber = duckv1.Destination{
 		Ref: &corev1.ObjectReference{
 			Kind:       "Service",
 			APIVersion: "serving.knative.dev/v1alpha1",
 		},
-	}
-	deprecatedSubscriber = &duckv1beta1.Destination{
-		DeprecatedKind:       "Service",
-		DeprecatedAPIVersion: "serving.knative.dev/v1alpha1",
-		DeprecatedName:       "subscriber_test",
-		DeprecatedNamespace:  "test_ns",
 	}
 	// Dependency annotation
 	validDependencyAnnotation   = "{\"kind\":\"CronJobSource\",\"name\":\"test-cronjob-source\",\"apiVersion\":\"sources.eventing.knative.dev/v1alpha1\"}"
@@ -71,6 +75,11 @@ var (
 	injectionAnnotationPath    = fmt.Sprintf("metadata.annotations[%s]", InjectionAnnotation)
 )
 
+const (
+	validLabelNameMaxCharsNotReached = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	invalidLabelNameMaxCharsReached  = validLabelNameMaxCharsNotReached + "b"
+)
+
 func TestTriggerValidation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -79,9 +88,51 @@ func TestTriggerValidation(t *testing.T) {
 	}{{
 		name: "invalid trigger spec",
 		t:    &Trigger{Spec: TriggerSpec{}},
+		want: func() *apis.FieldError {
+			var errs *apis.FieldError
+			fe := apis.ErrMissingField("spec.broker", "spec.filter")
+			errs = errs.Also(fe)
+			fe = apis.ErrGeneric("expected at least one, got none", "spec.subscriber.ref", "spec.subscriber.uri")
+			errs = errs.Also(fe)
+			return errs
+		}(),
+	}, {
+		name: "invalid trigger name",
+		t: &Trigger{
+			ObjectMeta: v1.ObjectMeta{
+				// ups ... name too long
+				Name:      invalidLabelNameMaxCharsReached,
+				Namespace: "dummy",
+			},
+			Spec: TriggerSpec{
+				Broker:     "test_broker",
+				Filter:     validEmptyFilter,
+				Subscriber: validSubscriber,
+			},
+		},
 		want: &apis.FieldError{
-			Paths:   []string{"spec.broker", "spec.filter", "spec.subscriber"},
-			Message: "missing field(s)",
+			Message: "must be no more than 63 characters",
+			Paths:   []string{"metadata.name"},
+			Details: "",
+		},
+	}, {
+		name: "invalid broker name",
+		t: &Trigger{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      validLabelNameMaxCharsNotReached,
+				Namespace: "dummy",
+			},
+			Spec: TriggerSpec{
+				// ups ... name too long
+				Broker:     invalidLabelNameMaxCharsReached,
+				Filter:     validEmptyFilter,
+				Subscriber: validSubscriber,
+			},
+		},
+		want: &apis.FieldError{
+			Message: "must be no more than 63 characters",
+			Paths:   []string{"spec.broker"},
+			Details: "",
 		},
 	}, {
 		name: "invalid dependency annotation, not a corev1.ObjectReference",
@@ -198,10 +249,10 @@ func TestTriggerValidation(t *testing.T) {
 					Annotations: map[string]string{
 						DependencyAnnotation: "{}",
 					}},
-				Spec: TriggerSpec{}},
+				Spec: TriggerSpec{Subscriber: validSubscriber}},
 			want: &apis.FieldError{
 				Paths: []string{
-					"spec.broker", "spec.filter", "spec.subscriber",
+					"spec.broker", "spec.filter",
 					dependencyAnnotationPath + "." + "kind",
 					dependencyAnnotationPath + "." + "name",
 					dependencyAnnotationPath + "." + "apiVersion"},
@@ -265,8 +316,13 @@ func TestTriggerSpecValidation(t *testing.T) {
 		name: "invalid trigger spec",
 		ts:   &TriggerSpec{},
 		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("broker", "filter", "subscriber")
-			return fe
+			var errs *apis.FieldError
+			fe := apis.ErrMissingField("broker", "filter")
+			errs = errs.Also(fe)
+			fe = apis.ErrGeneric("expected at least one, got none", "subscriber.ref", "subscriber.uri")
+			errs = errs.Also(fe)
+			return errs
+
 		}(),
 	}, {
 		name: "missing broker",
@@ -333,22 +389,14 @@ func TestTriggerSpecValidation(t *testing.T) {
 			Paths:   []string{"filter.attributes"},
 		},
 	}, {
-		name: "multiple oneof sourceAndType and attributes",
+		name: "Both attributes and deprecated source,type",
 		ts: &TriggerSpec{
-			Broker: "test_broker",
-			Filter: &TriggerFilter{
-				DeprecatedSourceAndType: &TriggerFilterSourceAndType{
-					Type:   "other_type",
-					Source: "other_source",
-				},
-				Attributes: &TriggerFilterAttributes{
-					"type": "other_type",
-				},
-			},
+			Broker:     "test_broker",
+			Filter:     invalidFilterHasBoth,
 			Subscriber: validSubscriber,
 		},
 		want: func() *apis.FieldError {
-			fe := apis.ErrMultipleOneOf("filter.sourceAndType", "filter.attributes")
+			fe := apis.ErrMultipleOneOf("filter.attributes, filter.sourceAndType")
 			return fe
 		}(),
 	}, {
@@ -357,10 +405,7 @@ func TestTriggerSpecValidation(t *testing.T) {
 			Broker: "test_broker",
 			Filter: validSourceAndTypeFilter,
 		},
-		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("subscriber")
-			return fe
-		}(),
+		want: apis.ErrGeneric("expected at least one, got none", "subscriber.ref", "subscriber.uri"),
 	}, {
 		name: "missing subscriber.ref.name",
 		ts: &TriggerSpec{
@@ -368,62 +413,40 @@ func TestTriggerSpecValidation(t *testing.T) {
 			Filter:     validSourceAndTypeFilter,
 			Subscriber: invalidSubscriber,
 		},
-		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("subscriber.ref.name")
-			return fe
-		}(),
+		want: apis.ErrMissingField("subscriber.ref.name"),
 	}, {
-		name: "deprecated subscriber",
+		name: "missing broker",
+		ts: &TriggerSpec{
+			Broker:     "",
+			Filter:     validSourceAndTypeFilter,
+			Subscriber: validSubscriber,
+		},
+		want: apis.ErrMissingField("broker"),
+	}, {
+		name: "valid empty filter",
+		ts: &TriggerSpec{
+			Broker:     "test_broker",
+			Filter:     validEmptyFilter,
+			Subscriber: validSubscriber,
+		},
+		want: &apis.FieldError{},
+	}, {
+		name: "valid SourceAndType filter",
 		ts: &TriggerSpec{
 			Broker:     "test_broker",
 			Filter:     validSourceAndTypeFilter,
-			Subscriber: deprecatedSubscriber,
+			Subscriber: validSubscriber,
 		},
-		want: func() *apis.FieldError {
-			var errs *apis.FieldError
-			errs = errs.Also(apis.ErrInvalidValue("apiVersion is not allowed here, it's a deprecated value", "apiVersion"))
-			errs = errs.Also(apis.ErrInvalidValue("kind is not allowed here, it's a deprecated value", "kind"))
-			errs = errs.Also(apis.ErrInvalidValue("name is not allowed here, it's a deprecated value", "name"))
-			errs = errs.Also(apis.ErrInvalidValue("namespace is not allowed here, it's a deprecated value", "namespace"))
-			return errs.ViaField("subscriber")
-		}(),
-	},
-		{
-			name: "missing broker",
-			ts: &TriggerSpec{
-				Broker:     "",
-				Filter:     validSourceAndTypeFilter,
-				Subscriber: validSubscriber,
-			},
-			want: func() *apis.FieldError {
-				fe := apis.ErrMissingField("broker")
-				return fe
-			}(),
-		}, {
-			name: "valid empty filter",
-			ts: &TriggerSpec{
-				Broker:     "test_broker",
-				Filter:     validEmptyFilter,
-				Subscriber: validSubscriber,
-			},
-			want: &apis.FieldError{},
-		}, {
-			name: "valid SourceAndType filter",
-			ts: &TriggerSpec{
-				Broker:     "test_broker",
-				Filter:     validSourceAndTypeFilter,
-				Subscriber: validSubscriber,
-			},
-			want: &apis.FieldError{},
-		}, {
-			name: "valid Attributes filter",
-			ts: &TriggerSpec{
-				Broker:     "test_broker",
-				Filter:     validAttributesFilter,
-				Subscriber: validSubscriber,
-			},
-			want: &apis.FieldError{},
-		}}
+		want: &apis.FieldError{},
+	}, {
+		name: "valid Attributes filter",
+		ts: &TriggerSpec{
+			Broker:     "test_broker",
+			Filter:     validAttributesFilter,
+			Subscriber: validSubscriber,
+		},
+		want: &apis.FieldError{},
+	}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -438,8 +461,8 @@ func TestTriggerSpecValidation(t *testing.T) {
 func TestTriggerImmutableFields(t *testing.T) {
 	tests := []struct {
 		name     string
-		current  apis.Immutable
-		original apis.Immutable
+		current  *Trigger
+		original *Trigger
 		want     *apis.FieldError
 	}{{
 		name: "good (no change)",
@@ -463,17 +486,6 @@ func TestTriggerImmutableFields(t *testing.T) {
 		},
 		original: nil,
 		want:     nil,
-	}, {
-		name: "invalid type",
-		current: &Trigger{
-			Spec: TriggerSpec{
-				Broker: "broker",
-			},
-		},
-		original: &Broker{},
-		want: &apis.FieldError{
-			Message: "The provided original was not a Trigger",
-		},
 	}, {
 		name: "good (filter change)",
 		current: &Trigger{

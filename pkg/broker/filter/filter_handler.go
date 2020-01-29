@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +66,19 @@ type Handler struct {
 	isReady       *atomic.Value
 }
 
+type sendError struct {
+	Err    error
+	Status int
+}
+
+func (e sendError) Error() string {
+	return e.Err.Error()
+}
+
+func (e sendError) Unwrap() error {
+	return e.Err
+}
+
 // FilterResult has the result of the filtering operation.
 type FilterResult string
 
@@ -82,7 +94,7 @@ func NewHandler(logger *zap.Logger, triggerLister eventinglisters.TriggerNamespa
 		MaxIdleConns:        defaultMaxIdleConnections,
 		MaxIdleConnsPerHost: defaultMaxIdleConnectionsPerHost,
 	}
-	ceClient, err := kncloudevents.NewDefaultClientGivenHttpTransport(httpTransport, connectionArgs)
+	ceClient, err := kncloudevents.NewDefaultClientGivenHttpTransport(httpTransport, &connectionArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -171,24 +183,29 @@ func (r *Handler) serveHTTP(ctx context.Context, event cloudevents.Event, resp *
 	}
 
 	// Remove the TTL attribute that is used by the Broker.
-	originalV3 := event.Context.AsV03()
-	ttl, ttlKey := broker.GetTTL(event.Context)
-	if ttl == nil {
+	ttl, err := broker.GetTTL(event.Context)
+	if err != nil {
 		// Only messages sent by the Broker should be here. If the attribute isn't here, then the
 		// event wasn't sent by the Broker, so we can drop it.
 		r.logger.Warn("No TTL seen, dropping", zap.Any("triggerRef", triggerRef), zap.Any("event", event))
-		// This doesn't return an error because normally this function is called by a Channel, which
-		// will retry all non-2XX responses. If we return an error from this function, then the
-		// framework returns a 500 to the caller, so the Channel would send this repeatedly.
+		// Return a BadRequest error, so the upstream can decide how to handle it, e.g. sending
+		// the message to a DLQ.
+		resp.Status = http.StatusBadRequest
 		return nil
 	}
-	delete(originalV3.Extensions, ttlKey)
-	event.Context = originalV3
+	if err := broker.DeleteTTL(event.Context); err != nil {
+		r.logger.Warn("Failed to delete TTL.", zap.Error(err))
+	}
 
 	r.logger.Debug("Received message", zap.Any("triggerRef", triggerRef))
 
 	responseEvent, err := r.sendEvent(ctx, tctx, triggerRef, &event)
 	if err != nil {
+		// Propagate any error codes from the invoke back upstram.
+		var httpError sendError
+		if errors.As(err, &httpError) {
+			resp.Status = httpError.Status
+		}
 		r.logger.Error("Error sending the event", zap.Error(err))
 		return err
 	}
@@ -199,8 +216,8 @@ func (r *Handler) serveHTTP(ctx context.Context, event cloudevents.Event, resp *
 	}
 
 	// Reattach the TTL (with the same value) to the response event before sending it to the Broker.
-	responseEvent.Context, err = broker.SetTTL(responseEvent.Context, ttl)
-	if err != nil {
+
+	if err := broker.SetTTL(responseEvent.Context, ttl); err != nil {
 		return err
 	}
 	resp.Event = responseEvent
@@ -226,20 +243,11 @@ func (r *Handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportC
 		filterType: triggerFilterAttribute(t.Spec.Filter, "type"),
 	}
 
-	subscriberURIString := t.Status.SubscriberURI
-	if subscriberURIString == "" {
+	subscriberURI := t.Status.SubscriberURI
+	if subscriberURI == nil {
 		err = errors.New("unable to read subscriberURI")
 		// Record the event count.
 		r.reporter.ReportEventCount(reportArgs, http.StatusNotFound)
-		return nil, err
-	}
-	// We could just send the request to this URI regardless, but let's just check to see if it well
-	// formed first, that way we can generate better error message if it isn't.
-	subscriberURI, err := url.Parse(subscriberURIString)
-	if err != nil {
-		r.logger.Error("Unable to parse subscriberURI", zap.Error(err), zap.String("subscriberURIString", subscriberURIString))
-		// Record the event count.
-		r.reporter.ReportEventCount(reportArgs, http.StatusInternalServerError)
 		return nil, err
 	}
 
@@ -263,7 +271,7 @@ func (r *Handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportC
 		}
 	}
 
-	sendingCTX := utils.ContextFrom(tctx, subscriberURI)
+	sendingCTX := utils.ContextFrom(tctx, subscriberURI.URL())
 	// Due to an issue in utils.ContextFrom, we don't retain the original trace context from ctx, so
 	// bring it in manually.
 	sendingCTX = trace.NewContext(sendingCTX, trace.FromContext(ctx))
@@ -275,6 +283,10 @@ func (r *Handler) sendEvent(ctx context.Context, tctx cloudevents.HTTPTransportC
 	r.reporter.ReportEventDispatchTime(reportArgs, rtctx.StatusCode, time.Since(start))
 	// Record the event count.
 	r.reporter.ReportEventCount(reportArgs, rtctx.StatusCode)
+	// Wrap any errors along with the response status code so that can be propagated upstream.
+	if err != nil {
+		err = sendError{err, rtctx.StatusCode}
+	}
 	return replyEvent, err
 }
 

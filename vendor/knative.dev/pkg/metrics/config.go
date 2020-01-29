@@ -27,14 +27,13 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
 	"go.opencensus.io/stats"
+	"go.uber.org/zap"
 	"knative.dev/pkg/metrics/metricskey"
 )
 
 const (
-	DomainEnv        = "METRICS_DOMAIN"
-	ConfigMapNameEnv = "CONFIG_OBSERVABILITY_NAME"
+	DomainEnv = "METRICS_DOMAIN"
 )
 
 // metricsBackend specifies the backend to use for metrics
@@ -58,8 +57,14 @@ const (
 	Stackdriver metricsBackend = "stackdriver"
 	// Prometheus is used for Prometheus backend
 	Prometheus metricsBackend = "prometheus"
+	// OpenCensus is used to export to the OpenCensus Agent / Collector,
+	// which can send to many other services.
+	OpenCensus metricsBackend = "opencensus"
 
 	defaultBackendEnvName = "DEFAULT_METRICS_BACKEND"
+
+	CollectorAddressKey = "metrics.opencensus-address"
+	CollectorSecureKey  = "metrics.opencensus-require-tls"
 
 	defaultPrometheusPort = 9090
 	maxPrometheusPort     = 65535
@@ -80,6 +85,12 @@ type metricsConfig struct {
 	// recorder provides a hook for performing custom transformations before
 	// writing the metrics to the stats.RecordWithOptions interface.
 	recorder func(context.Context, stats.Measurement, ...stats.Options) error
+
+	// ---- OpenCensus specific below ----
+	// collectorAddress is the address of the collector, if not `localhost:55678`
+	collectorAddress string
+	// Require mutual TLS. Defaults to "false" because mutual TLS is hard to set up.
+	requireSecure bool
 
 	// ---- Prometheus specific below ----
 	// prometheusPort is the port where metrics are exposed in Prometheus
@@ -165,16 +176,26 @@ func createMetricsConfig(ops ExporterOptions, logger *zap.SugaredLogger) (*metri
 		// Use Prometheus if DEFAULT_METRICS_BACKEND does not exist or is empty
 		backend = string(Prometheus)
 	}
-	// Override backend if it is setting in config map.
+	// Override backend if it is set in the config map.
 	if backendFromConfig, ok := m[BackendDestinationKey]; ok {
 		backend = backendFromConfig
 	}
 	lb := metricsBackend(strings.ToLower(backend))
 	switch lb {
-	case Stackdriver, Prometheus:
+	case Stackdriver, Prometheus, OpenCensus:
 		mc.backendDestination = lb
 	default:
 		return nil, fmt.Errorf("unsupported metrics backend value %q", backend)
+	}
+
+	if mc.backendDestination == OpenCensus {
+		mc.collectorAddress = ops.ConfigMap[CollectorAddressKey]
+		if isSecure := ops.ConfigMap[CollectorSecureKey]; isSecure != "" {
+			var err error
+			if mc.requireSecure, err = strconv.ParseBool(isSecure); err != nil {
+				return nil, fmt.Errorf("invalid %s value %q", CollectorSecureKey, isSecure)
+			}
+		}
 	}
 
 	if mc.backendDestination == Prometheus {
@@ -213,8 +234,8 @@ func createMetricsConfig(ops ExporterOptions, logger *zap.SugaredLogger) (*metri
 
 		if !allowCustomMetrics {
 			servingOrEventing := metricskey.KnativeRevisionMetrics.Union(
-				metricskey.KnativeTriggerMetrics)
-			mc.recorder = func(ctx context.Context, ms stats.Measurement, ros... stats.Options) error {
+				metricskey.KnativeTriggerMetrics).Union(metricskey.KnativeBrokerMetrics)
+			mc.recorder = func(ctx context.Context, ms stats.Measurement, ros ...stats.Options) error {
 				metricType := path.Join(mc.stackdriverMetricTypePrefix, ms.Measure().Name())
 
 				if servingOrEventing.Has(metricType) {
@@ -246,15 +267,6 @@ func createMetricsConfig(ops ExporterOptions, logger *zap.SugaredLogger) (*metri
 	}
 
 	return &mc, nil
-}
-
-// ConfigMapName gets the name of the metrics ConfigMap
-func ConfigMapName() string {
-	cm := os.Getenv(ConfigMapNameEnv)
-	if cm == "" {
-		return "config-observability"
-	}
-	return cm
 }
 
 // Domain holds the metrics domain to use for surfacing metrics.

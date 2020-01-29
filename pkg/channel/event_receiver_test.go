@@ -144,7 +144,7 @@ func TestEventReceiver_ServeHTTP(t *testing.T) {
 			tctx.URI = tc.path
 			ctx = cehttp.WithTransportContext(ctx, tctx)
 
-			event := cloudevents.NewEvent(cloudevents.VersionV03)
+			event := cloudevents.NewEvent(cloudevents.VersionV1)
 			event.Data = tc.body
 			eventResponse := cloudevents.EventResponse{}
 
@@ -156,5 +156,17 @@ func TestEventReceiver_ServeHTTP(t *testing.T) {
 				t.Fatalf("Unexpected status code. Expected %v. Actual %v", tc.expected, eventResponse.Status)
 			}
 		})
+	}
+}
+func TestEventReceiver_ParseChannel(t *testing.T) {
+	c, err := ParseChannel("test-channel.test-namespace.svc.")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if c.Name != "test-channel" {
+		t.Errorf("Expected Name: test-channel. Got: %q", c.Name)
+	}
+	if c.Namespace != "test-namespace" {
+		t.Errorf("Expected Name: test-namespace. Got: %q", c.Namespace)
 	}
 }

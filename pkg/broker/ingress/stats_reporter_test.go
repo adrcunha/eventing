@@ -35,7 +35,7 @@ func TestStatsReporter(t *testing.T) {
 		eventType: "testeventtype",
 	}
 
-	r := NewStatsReporter("testpod", "testcontainer")
+	r := NewStatsReporter("testcontainer", "testpod")
 
 	wantTags := map[string]string{
 		metricskey.LabelNamespaceName:     "testns",
@@ -43,7 +43,7 @@ func TestStatsReporter(t *testing.T) {
 		metricskey.LabelEventType:         "testeventtype",
 		metricskey.LabelResponseCode:      "202",
 		metricskey.LabelResponseCodeClass: "2xx",
-		broker.LabelPodName:               "testpod",
+		broker.LabelUniqueName:            "testpod",
 		broker.LabelContainerName:         "testcontainer",
 	}
 
@@ -79,6 +79,8 @@ func setup() {
 
 func resetMetrics() {
 	// OpenCensus metrics carry global state that need to be reset between unit tests.
-	metricstest.Unregister("event_count", "event_dispatch_latencies")
+	metricstest.Unregister(
+		"event_count",
+		"event_dispatch_latencies")
 	register()
 }

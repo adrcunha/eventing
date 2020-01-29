@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	cloudevents "github.com/cloudevents/sdk-go"
-	sourcesv1alpha1 "knative.dev/eventing/pkg/apis/sources/v1alpha1"
+	sourcesv1alpha1 "knative.dev/eventing/pkg/apis/legacysources/v1alpha1"
 )
 
 func MakeAddEvent(source string, obj interface{}) (*cloudevents.Event, error) {
@@ -106,7 +106,7 @@ func makeEvent(source, eventType string, obj *unstructured.Unstructured, data in
 		Namespace:  obj.GetNamespace(),
 	})
 
-	event := cloudevents.NewEvent(cloudevents.VersionV03)
+	event := cloudevents.NewEvent(cloudevents.VersionV1)
 	event.SetType(eventType)
 	event.SetSource(source)
 	event.SetSubject(subject)

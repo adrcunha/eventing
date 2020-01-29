@@ -23,16 +23,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"knative.dev/eventing/pkg/apis/messaging/v1alpha1"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	"knative.dev/eventing/pkg/apis/flows/v1alpha1"
+	messagingv1alpha1 "knative.dev/eventing/pkg/apis/messaging/v1alpha1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 )
 
 func SequenceSubscriptionName(sequenceName string, step int) string {
 	return fmt.Sprintf("%s-kn-sequence-%d", sequenceName, step)
 }
 
-func NewSubscription(stepNumber int, p *v1alpha1.Sequence) *v1alpha1.Subscription {
-	r := &v1alpha1.Subscription{
+func NewSubscription(stepNumber int, p *v1alpha1.Sequence) *messagingv1alpha1.Subscription {
+	r := &messagingv1alpha1.Subscription{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Subscription",
 			APIVersion: "messaging.knative.dev/v1alpha1",
@@ -45,29 +46,33 @@ func NewSubscription(stepNumber int, p *v1alpha1.Sequence) *v1alpha1.Subscriptio
 				*kmeta.NewControllerRef(p),
 			},
 		},
-		Spec: v1alpha1.SubscriptionSpec{
+		Spec: messagingv1alpha1.SubscriptionSpec{
 			Channel: corev1.ObjectReference{
 				APIVersion: p.Spec.ChannelTemplate.APIVersion,
 				Kind:       p.Spec.ChannelTemplate.Kind,
 				Name:       SequenceChannelName(p.Name, stepNumber),
 			},
-			Subscriber: &p.Spec.Steps[stepNumber],
+			Subscriber: &duckv1.Destination{
+				Ref: p.Spec.Steps[stepNumber].Ref,
+				URI: p.Spec.Steps[stepNumber].URI,
+			},
 		},
 	}
 	// If it's not the last step, use the next channel as the reply to, if it's the very
 	// last one, we'll use the (optional) reply from the Sequence Spec.
 	if stepNumber < len(p.Spec.Steps)-1 {
-		r.Spec.Reply = &v1alpha1.ReplyStrategy{
-			Destination: &duckv1beta1.Destination{
-				Ref: &corev1.ObjectReference{
-					APIVersion: p.Spec.ChannelTemplate.APIVersion,
-					Kind:       p.Spec.ChannelTemplate.Kind,
-					Name:       SequenceChannelName(p.Name, stepNumber+1),
-				},
+		r.Spec.Reply = &duckv1.Destination{
+			Ref: &corev1.ObjectReference{
+				APIVersion: p.Spec.ChannelTemplate.APIVersion,
+				Kind:       p.Spec.ChannelTemplate.Kind,
+				Name:       SequenceChannelName(p.Name, stepNumber+1),
 			},
 		}
 	} else if p.Spec.Reply != nil {
-		r.Spec.Reply = &v1alpha1.ReplyStrategy{Destination: p.Spec.Reply}
+		r.Spec.Reply = &duckv1.Destination{
+			Ref: p.Spec.Reply.Ref,
+			URI: p.Spec.Reply.URI,
+		}
 	}
 	return r
 }

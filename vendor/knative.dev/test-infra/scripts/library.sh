@@ -353,7 +353,7 @@ function create_junit_xml() {
     # Also escape `<` and `>` as here: https://github.com/golang/go/blob/50bd1c4d4eb4fac8ddeb5f063c099daccfb71b26/src/encoding/json/encode.go#L48, 
     # this is temporary solution for fixing https://github.com/knative/test-infra/issues/1204,
     # which should be obsolete once Test-infra 2.0 is in place
-    local msg="$(echo -n "$3" | sed 's/$/\&#xA;/g' | sed 's/</\\u003c/' | sed 's/>/\\u003e/' | tr -d '\n')"
+    local msg="$(echo -n "$3" | sed 's/$/\&#xA;/g' | sed 's/</\\u003c/' | sed 's/>/\\u003e/' | sed 's/&/\\u0026/' | tr -d '\n')"
     failure="<failure message=\"Failed\" type=\"\">${msg}</failure>"
   fi
   cat << EOF > "${xml}"
@@ -417,6 +417,21 @@ function start_knative_serving() {
   wait_until_pods_running knative-serving || return 1
 }
 
+# Install Knative Monitoring in the current cluster.
+# Parameters: $1 - Knative Monitoring manifest.
+function start_knative_monitoring() {
+  header "Starting Knative Monitoring"
+  subheader "Installing Knative Monitoring"
+  # namespace istio-system needs to be created first, due to the comment
+  # mentioned in
+  # https://github.com/knative/serving/blob/4202efc0dc12052edc0630515b101cbf8068a609/config/monitoring/tracing/zipkin/100-zipkin.yaml#L21
+  kubectl create namespace istio-system 2>/dev/null
+  echo "Installing Monitoring from $1"
+  kubectl apply -f "$1" || return 1
+  wait_until_pods_running knative-monitoring || return 1
+  wait_until_pods_running istio-system || return 1
+}
+
 # Install the stable release Knative/serving in the current cluster.
 # Parameters: $1 - Knative Serving version number, e.g. 0.6.0.
 function start_release_knative_serving() {
@@ -426,6 +441,29 @@ function start_release_knative_serving() {
 # Install the latest stable Knative Serving in the current cluster.
 function start_latest_knative_serving() {
   start_knative_serving "${KNATIVE_SERVING_RELEASE}"
+}
+
+# Install Knative Eventing in the current cluster.
+# Parameters: $1 - Knative Eventing manifest.
+function start_knative_eventing() {
+  header "Starting Knative Eventing"
+  subheader "Installing Knative Eventing"
+  echo "Installing Eventing CRDs from $1"
+  kubectl apply --selector knative.dev/crd-install=true -f "$1"
+  echo "Installing the rest of eventing components from $1"
+  kubectl apply -f "$1"
+  wait_until_pods_running knative-eventing || return 1
+}
+
+# Install the stable release Knative/eventing in the current cluster.
+# Parameters: $1 - Knative Eventing version number, e.g. 0.6.0.
+function start_release_knative_eventing() {
+  start_knative_eventing "https://storage.googleapis.com/knative-releases/eventing/previous/v$1/release.yaml"
+}
+
+# Install the latest stable Knative Eventing in the current cluster.
+function start_latest_knative_eventing() {
+  start_knative_eventing "${KNATIVE_EVENTING_RELEASE}"
 }
 
 # Run a go tool, installing it first if necessary.
@@ -559,14 +597,19 @@ function get_canonical_path() {
   echo "$(cd ${path%/*} && echo $PWD/${path##*/})"
 }
 
-# Returns whether the current branch is a release branch.
-function is_release_branch() {
+# Returns the current branch.
+function current_branch() {
   local branch_name=""
   # Get the branch name from Prow's env var, see https://github.com/kubernetes/test-infra/blob/master/prow/jobs.md.
   # Otherwise, try getting the current branch from git.
   (( IS_PROW )) && branch_name="${PULL_BASE_REF:-}"
   [[ -z "${branch_name}" ]] && branch_name="$(git rev-parse --abbrev-ref HEAD)"
-  [[ ${branch_name} =~ ^release-[0-9\.]+$ ]]
+  echo "${branch_name}"
+}
+
+# Returns whether the current branch is a release branch.
+function is_release_branch() {
+  [[ $(current_branch) =~ ^release-[0-9\.]+$ ]]
 }
 
 # Returns the URL to the latest manifest for the given Knative project.
@@ -577,19 +620,23 @@ function get_latest_knative_yaml_source() {
   local yaml_name="$2"
   # If it's a release branch, the yaml source URL should point to a specific version.
   if is_release_branch; then
-    # Get the latest tag name for the current branch, which is likely formatted as v0.5.0
-    local tag_name="$(git describe --tags --abbrev=0)"
-    # The given repo might not have this tag, so we need to find its latest release manifest with the same major&minor version.
-    local major_minor="$(echo ${tag_name} | cut -d. -f1-2)"
-    local yaml_source_path="$(gsutil ls gs://knative-releases/${repo_name}/previous/${major_minor}.*/${yaml_name}.yaml \
+    # Extract the release major&minor version from the branch name.
+    local branch_name="$(current_branch)"
+    local major_minor="${branch_name##release-}"
+    # Find the latest release manifest with the same major&minor version.
+    local yaml_source_path="$(
+      gsutil ls gs://knative-releases/${repo_name}/previous/v${major_minor}.*/${yaml_name}.yaml 2> /dev/null \
       | sort \
       | tail -n 1 \
       | cut -b6-)"
-    echo "https://storage.googleapis.com/${yaml_source_path}"
-  # If it's not a release branch, the yaml source URL should be nightly build.
-  else
-    echo "https://storage.googleapis.com/knative-nightly/${repo_name}/latest/${yaml_name}.yaml"
+    # The version does exist, return it.
+    if [[ -n "${yaml_source_path}" ]]; then
+      echo "https://storage.googleapis.com/${yaml_source_path}"
+      return
+    fi
+    # Otherwise, fall back to nightly.
   fi
+  echo "https://storage.googleapis.com/knative-nightly/${repo_name}/latest/${yaml_name}.yaml"
 }
 
 # Initializations that depend on previous functions.
@@ -600,5 +647,5 @@ readonly REPO_NAME_FORMATTED="Knative $(capitalize ${REPO_NAME//-/ })"
 
 # Public latest nightly or release yaml files.
 readonly KNATIVE_SERVING_RELEASE="$(get_latest_knative_yaml_source "serving" "serving")"
-readonly KNATIVE_EVENTING_RELEASE="$(get_latest_knative_yaml_source "eventing" "release")"
+readonly KNATIVE_EVENTING_RELEASE="$(get_latest_knative_yaml_source "eventing" "eventing")"
 readonly KNATIVE_MONITORING_RELEASE="$(get_latest_knative_yaml_source "serving" "monitoring")"

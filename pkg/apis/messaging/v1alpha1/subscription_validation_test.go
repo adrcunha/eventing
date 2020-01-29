@@ -22,7 +22,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"knative.dev/pkg/apis"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 )
 
 const (
@@ -43,30 +43,24 @@ func getValidChannelRef() corev1.ObjectReference {
 	}
 }
 
-func getValidReplyStrategy() *ReplyStrategy {
-	return &ReplyStrategy{
-		Destination: &duckv1beta1.Destination{
-			DeprecatedName:       replyChannelName,
-			DeprecatedKind:       channelKind,
-			DeprecatedAPIVersion: channelAPIVersion,
+func getValidReply() *duckv1.Destination {
+	return &duckv1.Destination{
+		Ref: &corev1.ObjectReference{
+			Name:       replyChannelName,
+			Kind:       channelKind,
+			APIVersion: channelAPIVersion,
 		},
 	}
 }
 
-func getValidDestination() *duckv1beta1.Destination {
-	return &duckv1beta1.Destination{
+func getValidDestination() *duckv1.Destination {
+	return &duckv1.Destination{
 		Ref: &corev1.ObjectReference{
 			Name:       subscriberName,
 			Kind:       routeKind,
 			APIVersion: routeAPIVersion,
 		},
 	}
-}
-
-type DummyImmutableType struct{}
-
-func (d *DummyImmutableType) CheckImmutableFields(ctx context.Context, og apis.Immutable) *apis.FieldError {
-	return nil
 }
 
 func TestSubscriptionValidation(t *testing.T) {
@@ -108,7 +102,7 @@ func TestSubscriptionSpecValidation(t *testing.T) {
 		c: &SubscriptionSpec{
 			Channel:    getValidChannelRef(),
 			Subscriber: getValidDestination(),
-			Reply:      getValidReplyStrategy(),
+			Reply:      getValidReply(),
 		},
 		want: nil,
 	}, {
@@ -148,8 +142,8 @@ func TestSubscriptionSpecValidation(t *testing.T) {
 		name: "empty Subscriber and Reply",
 		c: &SubscriptionSpec{
 			Channel:    getValidChannelRef(),
-			Subscriber: &duckv1beta1.Destination{},
-			Reply:      &ReplyStrategy{},
+			Subscriber: &duckv1.Destination{},
+			Reply:      &duckv1.Destination{},
 		},
 		want: func() *apis.FieldError {
 			fe := apis.ErrMissingField("reply", "subscriber")
@@ -168,22 +162,22 @@ func TestSubscriptionSpecValidation(t *testing.T) {
 		c: &SubscriptionSpec{
 			Channel:    getValidChannelRef(),
 			Subscriber: getValidDestination(),
-			Reply:      &ReplyStrategy{},
+			Reply:      &duckv1.Destination{},
 		},
 		want: nil,
 	}, {
 		name: "missing Subscriber",
 		c: &SubscriptionSpec{
 			Channel: getValidChannelRef(),
-			Reply:   getValidReplyStrategy(),
+			Reply:   getValidReply(),
 		},
 		want: nil,
 	}, {
 		name: "empty Subscriber",
 		c: &SubscriptionSpec{
 			Channel:    getValidChannelRef(),
-			Subscriber: &duckv1beta1.Destination{},
-			Reply:      getValidReplyStrategy(),
+			Subscriber: &duckv1.Destination{},
+			Reply:      getValidReply(),
 		},
 		want: nil,
 	}, {
@@ -211,7 +205,7 @@ func TestSubscriptionSpecValidation(t *testing.T) {
 		name: "missing name in Subscriber.Ref",
 		c: &SubscriptionSpec{
 			Channel: getValidChannelRef(),
-			Subscriber: &duckv1beta1.Destination{
+			Subscriber: &duckv1.Destination{
 				Ref: &corev1.ObjectReference{
 					Kind:       channelKind,
 					APIVersion: channelAPIVersion,
@@ -220,36 +214,6 @@ func TestSubscriptionSpecValidation(t *testing.T) {
 		},
 		want: func() *apis.FieldError {
 			fe := apis.ErrMissingField("subscriber.ref.name")
-			return fe
-		}(),
-	}, {
-		name: "missing name in Reply.DeprecatedChannel.Ref",
-		c: &SubscriptionSpec{
-			Channel: getValidChannelRef(),
-			Reply: &ReplyStrategy{
-				DeprecatedChannel: &duckv1beta1.Destination{
-					DeprecatedKind:       channelKind,
-					DeprecatedAPIVersion: channelAPIVersion,
-				},
-			},
-		},
-		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("reply.channel.name")
-			return fe
-		}(),
-	}, {
-		name: "missing name in Reply.Ref",
-		c: &SubscriptionSpec{
-			Channel: getValidChannelRef(),
-			Reply: &ReplyStrategy{
-				Destination: &duckv1beta1.Destination{
-					DeprecatedKind:       channelKind,
-					DeprecatedAPIVersion: channelAPIVersion,
-				},
-			},
-		},
-		want: func() *apis.FieldError {
-			fe := apis.ErrMissingField("reply.name")
 			return fe
 		}(),
 	}}
@@ -271,8 +235,8 @@ func TestSubscriptionImmutable(t *testing.T) {
 	newSubscriber := getValidDestination()
 	newSubscriber.Ref.Name = "newSubscriber"
 
-	newReply := getValidReplyStrategy()
-	newReply.Destination.DeprecatedName = "newReplyChannel"
+	newReply := getValidReply()
+	newReply.Ref.Name = "newReplyChannel"
 
 	tests := []struct {
 		name string
@@ -322,7 +286,7 @@ func TestSubscriptionImmutable(t *testing.T) {
 		c: &Subscription{
 			Spec: SubscriptionSpec{
 				Channel: getValidChannelRef(),
-				Reply:   getValidReplyStrategy(),
+				Reply:   getValidReply(),
 			},
 		},
 		og: &Subscription{
@@ -337,7 +301,7 @@ func TestSubscriptionImmutable(t *testing.T) {
 		c: &Subscription{
 			Spec: SubscriptionSpec{
 				Channel: getValidChannelRef(),
-				Reply:   getValidReplyStrategy(),
+				Reply:   getValidReply(),
 			},
 		},
 		og: &Subscription{
@@ -358,7 +322,7 @@ func TestSubscriptionImmutable(t *testing.T) {
 		og: &Subscription{
 			Spec: SubscriptionSpec{
 				Channel: getValidChannelRef(),
-				Reply:   getValidReplyStrategy(),
+				Reply:   getValidReply(),
 			},
 		},
 		want: nil,
@@ -392,26 +356,6 @@ func TestSubscriptionImmutable(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestInvalidImmutableType(t *testing.T) {
-	name := "invalid type"
-	c := &Subscription{
-		Spec: SubscriptionSpec{
-			Channel:    getValidChannelRef(),
-			Subscriber: getValidDestination(),
-		},
-	}
-	og := &DummyImmutableType{}
-	want := &apis.FieldError{
-		Message: "The provided original was not a Subscription",
-	}
-	t.Run(name, func(t *testing.T) {
-		got := c.CheckImmutableFields(context.TODO(), og)
-		if diff := cmp.Diff(want.Error(), got.Error()); diff != "" {
-			t.Errorf("CheckImmutableFields (-want, +got) = %v", diff)
-		}
-	})
 }
 
 func TestValidChannel(t *testing.T) {

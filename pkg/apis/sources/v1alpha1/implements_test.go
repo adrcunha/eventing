@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Knative Authors
+Copyright 2020 The Knative Authors
  Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"knative.dev/pkg/apis/duck"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
+	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
 	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
 )
 
@@ -24,10 +26,14 @@ func TestTypesImplements(t *testing.T) {
 		instance interface{}
 		iface    duck.Implementable
 	}{
-		// CronJobSource
-		{instance: &CronJobSource{}, iface: &duckv1beta1.Conditions{}},
+		// PingSource
+		{instance: &ApiServerSource{}, iface: &duckv1.Conditions{}},
 		// ContainerSource
-		{instance: &ContainerSource{}, iface: &duckv1beta1.Conditions{}},
+		{instance: &ApiServerSource{}, iface: &duckv1.Conditions{}},
+		// SinkBinding
+		{instance: &SinkBinding{}, iface: &duckv1.Conditions{}},
+		{instance: &SinkBinding{}, iface: &duckv1beta1.Source{}},
+		{instance: &SinkBinding{}, iface: &duckv1alpha1.Binding{}},
 	}
 	for _, tc := range testCases {
 		if err := duck.VerifyType(tc.instance, tc.iface); err != nil {

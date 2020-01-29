@@ -25,12 +25,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 
-	sourcesv1alpha1 "knative.dev/eventing/pkg/apis/sources/v1alpha1"
-	eventingtesting "knative.dev/eventing/pkg/reconciler/testing"
-	"knative.dev/eventing/test/base/resources"
-	"knative.dev/eventing/test/common"
 	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
 	pkgTest "knative.dev/pkg/test"
+
+	"knative.dev/eventing/test/lib"
+	"knative.dev/eventing/test/lib/resources"
+
+	sourcesv1alpha1 "knative.dev/eventing/pkg/apis/legacysources/v1alpha1"
+	eventingtesting "knative.dev/eventing/pkg/reconciler/testing"
 )
 
 func TestContainerSource(t *testing.T) {
@@ -48,23 +50,20 @@ func TestContainerSource(t *testing.T) {
 
 	// create event logger pod and service
 	loggerPod := resources.EventLoggerPod(loggerPodName)
-	client.CreatePodOrFail(loggerPod, common.WithService(loggerPodName))
+	client.CreatePodOrFail(loggerPod, lib.WithService(loggerPodName))
 
 	// create container source
 	data := fmt.Sprintf("TestContainerSource%s", uuid.NewUUID())
 	// args are the arguments passing to the container, msg is used in the heartbeats image
 	args := []string{"--msg=" + data}
 	// envVars are the environment variables of the container
-	envVars := []corev1.EnvVar{
-		{
-			Name:  "POD_NAME",
-			Value: templateName,
-		},
-		{
-			Name:  "POD_NAMESPACE",
-			Value: client.Namespace,
-		},
-	}
+	envVars := []corev1.EnvVar{{
+		Name:  "POD_NAME",
+		Value: templateName,
+	}, {
+		Name:  "POD_NAMESPACE",
+		Value: client.Namespace,
+	}}
 	containerSource := eventingtesting.NewContainerSource(
 		containerSourceName,
 		client.Namespace,
@@ -74,21 +73,19 @@ func TestContainerSource(t *testing.T) {
 					Name: templateName,
 				},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:            imageName,
-							Image:           pkgTest.ImagePath(imageName),
-							ImagePullPolicy: corev1.PullAlways,
-							Args:            args,
-							Env:             envVars,
-						},
-					},
+					Containers: []corev1.Container{{
+						Name:            imageName,
+						Image:           pkgTest.ImagePath(imageName),
+						ImagePullPolicy: corev1.PullAlways,
+						Args:            args,
+						Env:             envVars,
+					}},
 				},
 			},
 			Sink: &duckv1beta1.Destination{Ref: resources.ServiceRef(loggerPodName)},
 		}),
 	)
-	client.CreateContainerSourceOrFail(containerSource)
+	client.CreateLegacyContainerSourceOrFail(containerSource)
 
 	// wait for all test resources to be ready
 	if err := client.WaitForAllTestResourcesReady(); err != nil {
@@ -97,7 +94,7 @@ func TestContainerSource(t *testing.T) {
 
 	// verify the logger service receives the event
 	expectedCount := 2
-	if err := client.CheckLog(loggerPodName, common.CheckerContainsAtLeast(data, expectedCount)); err != nil {
+	if err := client.CheckLog(loggerPodName, lib.CheckerContainsAtLeast(data, expectedCount)); err != nil {
 		t.Fatalf("String %q does not appear at least %d times in logs of logger pod %q: %v", data, expectedCount, loggerPodName, err)
 	}
 }
